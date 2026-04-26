@@ -1,0 +1,263 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta http-equiv="Content-Language" content="zh-cn">
+    <meta name="apple-mobile-web-app-capable" content="no"/>
+    <meta name="apple-touch-fullscreen" content="yes"/>
+    <meta name="format-detection" content="telephone=no,email=no"/>
+    <meta name="apple-mobile-web-app-status-bar-style" content="white">
+    <meta name="renderer" content="webkit"/>
+    <meta name="force-rendering" content="webkit"/>
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge,chrome=1"/>
+    <meta http-equiv="Expires" content="0">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Cache-control" content="no-cache">
+    <meta http-equiv="Cache" content="no-cache">
+    <meta name="referrer" content="no-referrer">
+    <meta name="viewport"
+          content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <title>扫码支付</title>
+    <link rel="icon" href="/image/logo.png">
+    <link href="pay.css" rel="stylesheet" media="screen">
+    <script src="../layui/layui.js"></script>
+    <script src="../layui/lay/modules/jquery.js"></script>
+    <script>
+        window.jQuery = window.jQuery || (window.layui && (layui.$ || layui.jquery));
+        window.$ = window.$ || window.jQuery;
+    </script>
+</head>
+
+<body>
+<div class="body" id="body">
+    <h1 class="mod-title">
+        <span class="ico_log ico-1" id="icon-wechat" style="display: none;"></span>
+        <span class="ico_log ico-2" id="icon-alipay" style="display: none;"></span>
+    </h1>
+
+    <div class="mod-ct">
+        <div class="order">
+        </div>
+        <div class="amount" id="timeOut" style="font-size: 20px;color: red;display: none;"><p>订单已过期，请您返回网站重新发起支付</p><br></div>
+        <div id="orderbody">
+            <div class="amount" id="money">￥0</div>
+            <div class="qrcode-img-wrapper" data-role="qrPayImgWrapper">
+                <div data-role="qrPayImg" class="qrcode-img-area">
+                    <div class="ui-loading qrcode-loading" data-role="qrPayImgLoading" style="display: none;">加载中</div>
+                    <div style="position: relative;display: inline-block;">
+                        <img id="show_qrcode" alt="加载中..." src="" width="210" height="210" style="display: block;">
+                    </div>
+                </div>
+            </div>
+            <div class="time-item">
+                <div class="time-item" id="msg">
+                    <h1 id="priceWarning" style="display: none;">
+                        <span id="priceWarningText" style="color:red"></span><br>
+                    </h1>
+                </div>
+
+                <strong id="hour_show">0时</strong>
+                <strong id="minute_show">0分</strong>
+                <strong id="second_show">0秒</strong>
+            </div>
+
+            <div class="tip">
+                <div class="ico-scan"></div>
+                <div class="tip-text">
+                    <p id="scanPayType">请使用扫一扫</p>
+                    <p id="scanMode">扫描二维码完成支付</p>
+                </div>
+            </div>
+
+            <div class="detail" id="orderDetail">
+                <dl class="detail-ct" id="desc" style="display: none;">
+                    <dt>金额</dt>
+                    <dd id="detailPrice"></dd>
+                    <dt>商户订单：</dt>
+                    <dd id="detailPayId"></dd>
+                    <dt>创建时间：</dt>
+                    <dd id="detailDate"></dd>
+                    <dt>状态</dt>
+                    <dd id="detailState">等待支付</dd>
+                </dl>
+
+                <a href="javascript:void(0)" class="arrow" onclick="aaa()"><i class="ico-arrow"></i></a>
+            </div>
+        </div>
+
+        <div class="tip-text">
+        </div>
+    </div>
+    <div class="foot">
+        <div class="inner">
+            <p>手机用户可保存上方二维码到手机中</p>
+            <p id="albumHint">在扫一扫中选择“相册”即可</p>
+        </div>
+    </div>
+
+</div>
+<div class="copyRight">
+
+</div>
+
+<script>
+    var myTimer;
+    var currentOrderId = "";
+    var currentToken = "";
+
+    function aaa() {
+        if ($('#orderDetail').hasClass('detail-open')) {
+            $('#orderDetail .detail-ct').slideUp(500, function () {
+                $('#orderDetail').removeClass('detail-open');
+            });
+        } else {
+            $('#orderDetail .detail-ct').slideDown(500, function () {
+                $('#orderDetail').addClass('detail-open');
+            });
+        }
+    }
+
+    function formatDate(now) {
+        now = new Date(now);
+        return now.getFullYear()
+            + "-" + (now.getMonth() > 8 ? (now.getMonth() + 1) : "0" + (now.getMonth() + 1))
+            + "-" + (now.getDate() > 9 ? now.getDate() : "0" + now.getDate())
+            + " " + (now.getHours() > 9 ? now.getHours() : "0" + now.getHours())
+            + ":" + (now.getMinutes() > 9 ? now.getMinutes() : "0" + now.getMinutes())
+            + ":" + (now.getSeconds() > 9 ? now.getSeconds() : "0" + now.getSeconds());
+    }
+
+    function timer(intDiff) {
+        clearInterval(myTimer);
+
+        function renderTime() {
+            var day = 0;
+            var hour = 0;
+            var minute = 0;
+            var second = 0;
+            if (intDiff > 0) {
+                day = Math.floor(intDiff / (60 * 60 * 24));
+                hour = Math.floor(intDiff / (60 * 60)) - (day * 24);
+                minute = Math.floor(intDiff / 60) - (day * 24 * 60) - (hour * 60);
+                second = Math.floor(intDiff) - (day * 24 * 60 * 60) - (hour * 60 * 60) - (minute * 60);
+            }
+            if (minute <= 9) minute = '0' + minute;
+            if (second <= 9) second = '0' + second;
+            $('#hour_show').html('<s id="h"></s>' + hour + '时');
+            $('#minute_show').html('<s></s>' + minute + '分');
+            $('#second_show').html('<s></s>' + second + '秒');
+            if (hour <= 0 && minute <= 0 && second <= 0) {
+                qrcode_timeout();
+                clearInterval(myTimer);
+            }
+            intDiff--;
+        }
+
+        renderTime();
+        myTimer = window.setInterval(renderTime, 1000);
+    }
+
+    function qrcode_timeout() {
+        document.getElementById("orderbody").style.display = "none";
+        document.getElementById("timeOut").style.display = "";
+    }
+
+    function getQueryString(name) {
+        var reg = new RegExp("(^|&)" + name + "=([^&]*)(&|$)", "i");
+        var r = window.location.search.substr(1).match(reg);
+        if (r != null) {
+            return decodeURI(r[2]);
+        }
+        return null;
+    }
+
+    function tokenStorageKey(orderId) {
+        return "vmq_order_token:" + orderId;
+    }
+
+    function loadOrderAccess() {
+        var orderId = getQueryString("orderId");
+        var token = getQueryString("token");
+
+        currentOrderId = orderId == null ? "" : orderId;
+        currentToken = token == null ? "" : token;
+
+        try {
+            if (currentOrderId !== "" && currentToken !== "") {
+                window.sessionStorage.setItem(tokenStorageKey(currentOrderId), currentToken);
+            } else if (currentOrderId !== "") {
+                currentToken = window.sessionStorage.getItem(tokenStorageKey(currentOrderId)) || "";
+            }
+        } catch (e) {
+        }
+
+        if (currentOrderId !== "" && currentToken !== "" && window.history && window.history.replaceState) {
+            window.history.replaceState(null, document.title, window.location.pathname + "?orderId=" + encodeURIComponent(currentOrderId));
+        }
+    }
+
+    function orderQuery() {
+        return "orderId=" + encodeURIComponent(currentOrderId) + "&token=" + encodeURIComponent(currentToken);
+    }
+
+    function renderOrder(data) {
+        var payTypeText = data.payType == 1 ? "微信" : "支付宝";
+        $('#icon-wechat').toggle(data.payType == 1);
+        $('#icon-alipay').toggle(data.payType == 2);
+        $('#money').text("￥" + data.reallyPrice);
+        $('#show_qrcode').attr('src', '/enQrcode?url=' + encodeURIComponent(data.payUrl));
+        $('#detailPrice').text(data.price);
+        $('#detailPayId').text(data.payId);
+        $('#detailDate').text(formatDate(data.date));
+        $('#detailState').text('等待支付');
+        $('#scanPayType').text('请使用' + payTypeText + '扫一扫');
+        $('#albumHint').text('在' + payTypeText + '扫一扫中选择“相册”即可');
+        $('#scanMode').text(data.isAuto == 0 ? '扫描二维码完成支付' : '扫码后输入金额支付');
+
+        if (String(data.price) !== String(data.reallyPrice)) {
+            $('#priceWarningText').text('为了您正常支付 请务必付款 ' + data.reallyPrice + ' 元 备注说明无需填写');
+            $('#priceWarning').show();
+        } else {
+            $('#priceWarning').hide();
+        }
+    }
+
+    function check() {
+        $.post("/checkOrder", orderQuery(), function (data) {
+            console.log(data);
+            if (data.code == 1) {
+                window.location.href = data.data;
+            } else {
+                if (data.msg == "订单已过期") {
+                    qrcode_timeout();
+                } else {
+                    setTimeout(check, 1500);
+                }
+            }
+        });
+    }
+
+    loadOrderAccess();
+    if (currentOrderId === "" || currentToken === "") {
+        timer(0);
+    } else {
+        $.post("/getOrder", orderQuery(), function (data) {
+            if (data.code == 1) {
+                var time = new Date().getTime() - data.data.date;
+                time = time / 1000;
+                time = data.data.timeOut * 60 - time;
+                if (data.data.state == -1) {
+                    time = 0;
+                }
+                timer(time);
+                renderOrder(data.data);
+                check();
+            } else {
+                timer(0);
+            }
+        });
+    }
+</script>
+</body>
+</html>

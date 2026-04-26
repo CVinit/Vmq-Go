@@ -1,0 +1,17 @@
+This repository is a derivative work and GitHub fork of:
+https://github.com/szvone/Vmq
+
+Upstream project name: Vmq
+Upstream author: vone
+
+This repository is not an official upstream repository.
+
+Major changes in this repository include:
+- Rewriting the server side in Go
+- Replacing the original storage/runtime choices with PostgreSQL and Docker-based deployment
+- Preserving part of the original frontend pages, static assets, and API compatibility behavior
+- Adding security hardening for authentication, callback validation, proxy handling, and admin endpoints
+
+This repository is distributed under the MIT License. See LICENSE for details.
+
+If any third-party files in this repository carry their own attribution or license notices, those notices should be preserved alongside this NOTICE file.

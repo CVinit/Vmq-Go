@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vmq}
+      POSTGRES_USER: ${POSTGRES_USER:-vmq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vmq}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vmq} -d ${POSTGRES_DB:-vmq}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_PORT: ${APP_PORT:-8080}
+      SESSION_SECRET: ${SESSION_SECRET}
+      ADMIN_USER: ${ADMIN_USER}
+      ADMIN_PASS: ${ADMIN_PASS}
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      DATABASE_URL: ${DATABASE_URL:-postgres://vmq:vmq@postgres:5432/vmq?sslmode=disable}
+      ADMIN_SESSION_TTL_HOURS: ${ADMIN_SESSION_TTL_HOURS:-720}
+      ALLOW_INSECURE_DEV_DEFAULTS: ${ALLOW_INSECURE_DEV_DEFAULTS:-0}
+      ALLOW_PRIVATE_CALLBACKS: ${ALLOW_PRIVATE_CALLBACKS:-0}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+      TRUST_CLOUDFLARE_IPS: ${TRUST_CLOUDFLARE_IPS:-0}
+      BASE_WEB_PATH: /app/src/main/webapp
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+volumes:
+  postgres_data:

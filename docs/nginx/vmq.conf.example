@@ -1,0 +1,70 @@
+limit_req_zone $binary_remote_addr zone=vmq_login:10m rate=5r/m;
+
+upstream vmq_app {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name your.domain.example;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name your.domain.example;
+
+    ssl_certificate /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Cloudflare -> Nginx -> vmq 时，按 Cloudflare 官方 IP 列表补齐 set_real_ip_from。
+    # set_real_ip_from 173.245.48.0/20;
+    # set_real_ip_from 103.21.244.0/22;
+    # ...
+    # real_ip_header CF-Connecting-IP;
+
+    client_max_body_size 6m;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_read_timeout 30s;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 30s;
+
+    location = /login {
+        limit_req zone=vmq_login burst=5 nodelay;
+        proxy_pass http://vmq_app;
+    }
+
+    location = /logout {
+        proxy_pass http://vmq_app;
+    }
+
+    location = /aaa.html {
+        # 如需只允许固定办公出口访问后台，可取消下面两行注释并替换地址。
+        # allow 203.0.113.10;
+        # deny all;
+        proxy_pass http://vmq_app;
+    }
+
+    location ^~ /admin/ {
+        # 如需只允许固定办公出口访问后台，可取消下面两行注释并替换地址。
+        # allow 203.0.113.10;
+        # deny all;
+        proxy_pass http://vmq_app;
+    }
+
+    location / {
+        proxy_pass http://vmq_app;
+    }
+}

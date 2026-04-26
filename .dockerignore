@@ -1,0 +1,10 @@
+.git
+.idea
+target
+*.iml
+*.ipr
+*.iws
+README.md.bak
+wx.jpg
+zfb.jpg
+docs
