@@ -57,6 +57,16 @@ func ValidateConfig(cfg Config) error {
 	if len(cfg.BootstrapAdminPass) > maxAdminPassLength {
 		return fmt.Errorf("ADMIN_PASS must not exceed %d characters", maxAdminPassLength)
 	}
+	if cfg.EpayMerchantKey != "" {
+		if err := validateSharedSecret("EPAY_MERCHANT_KEY", cfg.EpayMerchantKey, cfg.AllowInsecureDefaults); err != nil {
+			return err
+		}
+	}
+	if cfg.EpayPublicBaseURL != "" {
+		if err := validateCallbackURL(cfg.EpayPublicBaseURL, maxNotifyURLLength, false); err != nil {
+			return fmt.Errorf("EPAY_PUBLIC_BASE_URL invalid: %w", err)
+		}
+	}
 	return nil
 }
 

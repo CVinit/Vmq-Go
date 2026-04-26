@@ -25,6 +25,7 @@
 ### 兼容性保留
 
 - 保留主要接口路径，例如 `/login`、`/createOrder`、`/getOrder`、`/checkOrder`、`/appHeart`、`/appPush`、`/getState`、`/admin/*`
+- 增加易支付兼容入口 `/mapi.php` 与 `/submit.php`，可作为 Dujiao-Next 的 `epay` 支付网关
 - 保留 `src/main/webapp` 中的主要前端页面和后台交互结构
 - 保留 `CommonRes` / `PageRes` 等返回格式习惯
 - 保留支付页通过 `/payPage/pay.html?orderId=...&token=...` 读取订单的兼容方式
@@ -40,6 +41,7 @@
 - 敏感 JSON、后台页面、支付页、二维码动态响应统一增加 `no-store`
 - 增加真实退出接口 `/logout`，服务端清理后台 Cookie
 - 适配 `Docker + Nginx + Cloudflare` 场景下的真实客户端 IP 识别
+- 易支付适配层独立校验 `pid`、`sign_type`、MD5 签名、回调地址和 Dujiao `param`，并禁止普通 `/createOrder` 伪造易支付内部订单标记
 
 ## 仓库结构
 
@@ -90,6 +92,25 @@ docker compose logs -f postgres
 - 后台登录页：`http://127.0.0.1:8080/index.html`
 
 更多部署说明见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
+
+## Dujiao-Next 易支付接入
+
+本项目可作为 Dujiao-Next 的外部 `epay` 网关使用。VMQ 对外提供：
+
+- `POST /mapi.php`：Dujiao-Next `epay_version=v1` 创建订单接口，返回 VMQ 支付页 `payurl`
+- `GET|POST /submit.php`：兼容易支付跳转下单接口，创建订单后跳转 VMQ 支付页
+
+VMQ 侧推荐配置：
+
+```env
+EPAY_MERCHANT_ID=1000
+EPAY_MERCHANT_KEY=替换为至少32位随机字符串
+EPAY_PUBLIC_BASE_URL=https://vmq.example.com
+```
+
+Dujiao-Next 支付渠道中选择 `provider_type=epay`，`gateway_url` 填 VMQ 公网地址，例如 `https://vmq.example.com`，`epay_version` 填 `v1`，`merchant_id` 和 `merchant_key` 分别对应上面的 `EPAY_MERCHANT_ID` 与 `EPAY_MERCHANT_KEY`。支付宝渠道使用 `channel_type=alipay`，微信渠道使用 `channel_type=wechat` 或 `wxpay`。
+
+完整配置教程见 [`docs/DUJIAO_NEXT_VMQ_EPAY.md`](docs/DUJIAO_NEXT_VMQ_EPAY.md)。
 
 ## GitHub 自动构建 Docker 镜像
 

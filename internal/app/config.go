@@ -21,6 +21,9 @@ type Config struct {
 	AdminSessionTTL       time.Duration
 	TrustedProxyCIDRs     []string
 	TrustCloudflareIPs    bool
+	EpayMerchantID        string
+	EpayMerchantKey       string
+	EpayPublicBaseURL     string
 }
 
 func LoadConfig() Config {
@@ -38,6 +41,9 @@ func LoadConfig() Config {
 		AdminSessionTTL:       30 * 24 * time.Hour,
 		TrustedProxyCIDRs:     splitCSVEnv("TRUSTED_PROXY_CIDRS"),
 		TrustCloudflareIPs:    getEnv("TRUST_CLOUDFLARE_IPS", "") == "1",
+		EpayMerchantID:        getEnv("EPAY_MERCHANT_ID", "1000"),
+		EpayMerchantKey:       os.Getenv("EPAY_MERCHANT_KEY"),
+		EpayPublicBaseURL:     strings.TrimRight(os.Getenv("EPAY_PUBLIC_BASE_URL"), "/"),
 	}
 
 	if raw := os.Getenv("HTTP_CLIENT_TIMEOUT"); raw != "" {

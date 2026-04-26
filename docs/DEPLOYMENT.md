@@ -55,6 +55,9 @@ ADMIN_PASS=后台管理员密码
 POSTGRES_PASSWORD=PostgreSQL密码
 COOKIE_SECURE=0
 APP_PORT=8080
+EPAY_MERCHANT_ID=1000
+EPAY_MERCHANT_KEY=替换为至少32位随机字符串
+EPAY_PUBLIC_BASE_URL=https://vmq.example.com
 ```
 
 生产环境建议：
@@ -66,6 +69,8 @@ APP_PORT=8080
 - 只有明确需要回调到内网系统时，才设置 `ALLOW_PRIVATE_CALLBACKS=1`
 - 如果应用前面有 Nginx、Traefik、Caddy 等反代，设置 `TRUSTED_PROXY_CIDRS`
 - 如果应用直接暴露在 Cloudflare 后面而不是先经过你自己的 Nginx，可设置 `TRUST_CLOUDFLARE_IPS=1`
+- 如果要接入 Dujiao-Next，将 `EPAY_PUBLIC_BASE_URL` 固定为 VMQ 的公网 HTTPS 地址，避免反代场景下生成内网或 HTTP 支付链接
+- `EPAY_MERCHANT_KEY` 建议独立于后台系统设置里的商户通讯密钥 `key`，不要在 Dujiao-Next 以外泄露
 
 反代相关环境变量说明：
 
@@ -79,6 +84,31 @@ TRUSTED_PROXY_CIDRS=
 # 如果是 Cloudflare -> Nginx -> app，通常保持 0，由 Nginx 统一处理真实 IP
 TRUST_CLOUDFLARE_IPS=0
 ```
+
+## 3.1 Dujiao-Next 易支付渠道配置
+
+本项目提供易支付兼容入口：
+
+- `POST /mapi.php`：Dujiao-Next `epay_version=v1` 创建订单接口
+- `GET|POST /submit.php`：易支付跳转下单接口
+
+Dujiao-Next 支付渠道建议按两个渠道分别配置：
+
+```yaml
+provider_type: epay
+channel_type: alipay
+interaction_mode: redirect
+gateway_url: https://vmq.example.com
+epay_version: v1
+merchant_id: "1000"
+merchant_key: "<EPAY_MERCHANT_KEY>"
+notify_url: https://dujiao-api.example.com/api/v1/payments/callback
+return_url: https://dujiao-front.example.com/payment/return
+sign_type: MD5
+device: pc
+```
+
+微信渠道只需要把 `channel_type` 改为 `wechat` 或 `wxpay`。VMQ 会把 Dujiao-Next 传入的 `param` 写入内部订单标记，并在监控端确认收款后用原始订单金额回调 Dujiao-Next，避免 VMQ 金额区分产生的 `reallyPrice` 触发 Dujiao-Next 金额不一致。
 
 ## 4. 启动服务
 

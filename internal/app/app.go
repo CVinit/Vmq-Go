@@ -88,6 +88,8 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("/enQrcode", a.handleEncodeQRCode)
 	mux.HandleFunc("/deQrcode", adminPostOnly(a.handleDecodeQRCode))
 	mux.HandleFunc("/deQrcode2", adminPostOnly(a.handleDecodeQRCodeFile))
+	mux.HandleFunc("/mapi.php", a.handleEpayMAPI)
+	mux.HandleFunc("/submit.php", a.handleEpaySubmit)
 
 	fileServer := http.FileServer(http.Dir(a.cfg.WebRoot))
 	mux.HandleFunc("/index.html", func(w http.ResponseWriter, r *http.Request) {
@@ -588,6 +590,10 @@ func (a *App) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	param := r.FormValue("param")
+	if isEpayOrderParam(param) {
+		a.writeJSON(w, errorRes("param使用了系统保留前缀"))
+		return
+	}
 	isHTML := parsePositiveIntDefault(r.FormValue("isHtml"), 0)
 	res := a.createOrder(r.Context(), payID, param, payType, priceRaw, round2(price), r.FormValue("notifyUrl"), r.FormValue("returnUrl"), sign)
 	if isHTML == 0 {
@@ -840,6 +846,16 @@ func (a *App) handleAppPushLogic(ctx context.Context, payType int, priceRaw, tim
 		return errorRes("未匹配到待支付订单")
 	}
 
+	if epayType, callbackParam, ok := parseEpayOrderParam(order.Param); ok {
+		resp := a.sendEpayNotify(ctx, order, epayType, callbackParam)
+		if resp == epayCallbackSuccess {
+			return successOnly()
+		}
+		order.State = 2
+		_ = a.store.UpdateOrder(ctx, order)
+		return errorRes("通知易支付异步地址失败")
+	}
+
 	merchantKey, err := a.merchantKey(ctx)
 	if err != nil {
 		return errorOnly()
@@ -923,6 +939,16 @@ func (a *App) handleCheckOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	if order.State == -1 {
 		a.writeJSON(w, errorRes("订单已过期"))
+		return
+	}
+	if _, _, ok := parseEpayOrderParam(order.Param); ok {
+		if order.ReturnURL != "" {
+			if err := validateCallbackURL(order.ReturnURL, maxReturnURLLength, true); err != nil {
+				a.writeJSON(w, errorRes("returnUrl不合法"))
+				return
+			}
+		}
+		a.writeJSON(w, successRes(order.ReturnURL))
 		return
 	}
 	key, err := a.store.GetSetting(r.Context(), "key")
