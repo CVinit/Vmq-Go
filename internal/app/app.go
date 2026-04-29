@@ -27,6 +27,8 @@ type App struct {
 	clientIPs     *clientIPResolver
 }
 
+const maxCallbackResponseBodyBytes = 2048
+
 func New(cfg Config, store Store) (*App, error) {
 	clientIPs, err := newClientIPResolver(cfg)
 	if err != nil {
@@ -393,6 +395,25 @@ func (a *App) handleAdminSetBd(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, errorOnly())
 		return
 	}
+
+	if epayType, callbackParam, ok := parseEpayOrderParam(order.Param); ok {
+		resp := a.sendEpayNotify(r.Context(), order, epayType, callbackParam)
+		if resp != epayCallbackSuccess {
+			a.writeJSON(w, errorResCode(-2, resp))
+			return
+		}
+		if order.State == 0 {
+			_ = a.store.ReleasePrice(r.Context(), priceKey(order.Type, order.ReallyPrice))
+		}
+		order.State = 1
+		if err := a.store.UpdateOrder(r.Context(), order); err != nil {
+			a.writeJSON(w, errorOnly())
+			return
+		}
+		a.writeJSON(w, successOnly())
+		return
+	}
+
 	query := buildNotifyQuery(order, key)
 	notifyURL := order.NotifyURL
 	if notifyURL == "" {
@@ -1100,14 +1121,37 @@ func (a *App) sendNotifyGET(target, query string) string {
 		return "服务器无响应"
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "异步通知返回非2xx状态"
-	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := readCallbackResponseBody(resp.Body)
 	if err != nil {
 		return "服务器无响应"
 	}
-	return strings.TrimSpace(string(body))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return callbackHTTPStatusError("异步通知返回非2xx状态", resp.StatusCode, body)
+	}
+	return body
+}
+
+func readCallbackResponseBody(body io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxCallbackResponseBodyBytes+1))
+	if err != nil {
+		return "", err
+	}
+	truncated := len(data) > maxCallbackResponseBodyBytes
+	if truncated {
+		data = data[:maxCallbackResponseBodyBytes]
+	}
+	text := strings.TrimSpace(string(data))
+	if truncated {
+		text += "...(truncated)"
+	}
+	return text, nil
+}
+
+func callbackHTTPStatusError(prefix string, statusCode int, body string) string {
+	if body == "" {
+		return fmt.Sprintf("%s: status=%d", prefix, statusCode)
+	}
+	return fmt.Sprintf("%s: status=%d body=%s", prefix, statusCode, body)
 }
 
 func (a *App) newOrderID() string {

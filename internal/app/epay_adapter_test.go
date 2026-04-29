@@ -182,6 +182,109 @@ func TestEpayCallbackUsesOriginalAmountAndSignsDujiaoPayload(t *testing.T) {
 	}
 }
 
+func TestEpayAdminBackfillUsesEpayCallback(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AllowPrivateCallbacks = true
+	app.cfg.EpayMerchantID = "1000"
+	app.cfg.EpayMerchantKey = "epay-secret-with-at-least-thirty-two-bytes"
+	ctx := context.Background()
+	var callback url.Values
+	var method string
+	dujiao := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm returned error: %v", err)
+		}
+		callback = r.PostForm
+		_, _ = w.Write([]byte("success"))
+	}))
+	defer dujiao.Close()
+	order := &PayOrder{
+		OrderID:     "VMQORDER-BACKFILL",
+		PayID:       "DUJIAO202604260007",
+		CreateDate:  app.now().UnixMilli(),
+		Param:       epayOrderParam("alipay", "207"),
+		Type:        2,
+		Price:       10,
+		ReallyPrice: 10.01,
+		NotifyURL:   dujiao.URL,
+		ReturnURL:   "https://shop.example.com/payment/return",
+		State:       0,
+		IsAuto:      1,
+		PayURL:      "HTTPS://QR.ALIPAY.COM/TEST",
+	}
+	if err := app.store.CreateOrder(ctx, order); err != nil {
+		t.Fatalf("CreateOrder returned error: %v", err)
+	}
+	cookieRec := httptest.NewRecorder()
+	if err := app.setAdminCookie(ctx, cookieRec); err != nil {
+		t.Fatalf("setAdminCookie returned error: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/setBd", strings.NewReader(url.Values{"id": []string{strconv.FormatInt(order.ID, 10)}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(cookieRec.Result().Cookies()[0])
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	var payload CommonRes
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Code != 1 {
+		t.Fatalf("expected admin backfill success, got %#v", payload)
+	}
+	if method != http.MethodPost {
+		t.Fatalf("expected epay backfill to POST callback, got %q", method)
+	}
+	if callback.Get("payId") != "" {
+		t.Fatalf("expected epay callback not to use legacy VMQ payId field, got %v", callback)
+	}
+	if got := callback.Get("out_trade_no"); got != order.PayID {
+		t.Fatalf("unexpected out_trade_no %q", got)
+	}
+	if got := callback.Get("param"); got != "207" {
+		t.Fatalf("unexpected param %q", got)
+	}
+	if !verifyEpaySign(valuesToMap(callback), app.cfg.EpayMerchantKey) {
+		t.Fatalf("expected Dujiao callback signature to verify, got %v", callback)
+	}
+	stored, err := app.store.GetOrderByID(ctx, order.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("GetOrderByID returned order=%#v err=%v", stored, err)
+	}
+	if stored.State != 1 {
+		t.Fatalf("expected backfilled order state to be paid, got %d", stored.State)
+	}
+}
+
+func TestEpayNotifyReportsNon2xxStatusAndBody(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AllowPrivateCallbacks = true
+	app.cfg.EpayMerchantID = "1000"
+	app.cfg.EpayMerchantKey = "epay-secret-with-at-least-thirty-two-bytes"
+	dujiao := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("bad callback"))
+	}))
+	defer dujiao.Close()
+	order := &PayOrder{
+		OrderID:   "VMQORDER-NON2XX",
+		PayID:     "DUJIAO202604260008",
+		Param:     epayOrderParam("alipay", "208"),
+		Type:      2,
+		Price:     10,
+		NotifyURL: dujiao.URL,
+		State:     1,
+	}
+
+	resp := app.sendEpayNotify(context.Background(), order, "alipay", "208")
+
+	if !strings.Contains(resp, "status=400") || !strings.Contains(resp, "bad callback") {
+		t.Fatalf("expected non-2xx status and body in response, got %q", resp)
+	}
+}
+
 func TestEpayCheckOrderReturnsDujiaoReturnURLWithoutLegacyVMQQuery(t *testing.T) {
 	app := newTestApp(t)
 	ctx := context.Background()

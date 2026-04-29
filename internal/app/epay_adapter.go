@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -193,14 +192,14 @@ func (a *App) sendEpayNotify(ctx context.Context, order *PayOrder, epayType, cal
 		return "server unavailable"
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "non-2xx callback response"
-	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := readCallbackResponseBody(resp.Body)
 	if err != nil {
 		return "response read failed"
 	}
-	return strings.TrimSpace(string(body))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return callbackHTTPStatusError("non-2xx callback response", resp.StatusCode, body)
+	}
+	return body
 }
 
 func (a *App) buildEpayCallbackParams(order *PayOrder, epayType, callbackParam, key string) map[string]string {
