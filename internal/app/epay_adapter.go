@@ -79,11 +79,18 @@ func (a *App) createEpayOrder(ctx context.Context, r *http.Request) (*epayCreate
 	if err != nil {
 		return nil, err
 	}
+	param := epayOrderParam(input.EpayType, input.Param)
+	existing, err := a.store.GetOrderByPayID(ctx, input.OutTradeNo)
+	if err != nil {
+		return nil, errors.New("create order failed")
+	}
+	if existing != nil {
+		return a.existingEpayCreateResult(r, existing, input, param)
+	}
 	merchantKey, err := a.merchantKey(ctx)
 	if err != nil {
 		return nil, errors.New("merchant key unavailable")
 	}
-	param := epayOrderParam(input.EpayType, input.Param)
 	sign := md5Hex(input.OutTradeNo + param + strconv.Itoa(input.PayType) + input.Money + merchantKey)
 	res := a.createOrder(ctx, input.OutTradeNo, param, input.PayType, input.Money, mustParseMoney(input.Money), input.NotifyURL, input.ReturnURL, sign)
 	if res.Code != 1 {
@@ -104,6 +111,30 @@ func (a *App) createEpayOrder(ctx context.Context, r *http.Request) (*epayCreate
 		PayURL:  payURL,
 		QRCode:  "",
 	}, nil
+}
+
+func (a *App) existingEpayCreateResult(r *http.Request, order *PayOrder, input *epayCreateInput, param string) (*epayCreateResult, error) {
+	if !epayOrderMatchesInput(order, input, param) {
+		return nil, errors.New("out_trade_no already exists with different epay order fields")
+	}
+	return &epayCreateResult{
+		Code:    1,
+		Msg:     "success",
+		TradeNo: order.OrderID,
+		PayURL:  a.epayPayPageURL(r, order.OrderID, orderAccessToken(order.OrderID, a.cfg.SessionSecret)),
+		QRCode:  "",
+	}, nil
+}
+
+func epayOrderMatchesInput(order *PayOrder, input *epayCreateInput, param string) bool {
+	if order == nil || input == nil {
+		return false
+	}
+	return order.Param == param &&
+		order.Type == input.PayType &&
+		round2(order.Price) == mustParseMoney(input.Money) &&
+		strings.TrimSpace(order.NotifyURL) == input.NotifyURL &&
+		strings.TrimSpace(order.ReturnURL) == input.ReturnURL
 }
 
 func (a *App) parseEpayCreateInput(ctx context.Context, r *http.Request) (*epayCreateInput, error) {
@@ -134,6 +165,9 @@ func (a *App) parseEpayCreateInput(ctx context.Context, r *http.Request) (*epayC
 	if outTradeNo == "" {
 		return nil, errors.New("out_trade_no is required")
 	}
+	if len(outTradeNo) > maxPayIDLength {
+		return nil, fmt.Errorf("out_trade_no length must not exceed %d", maxPayIDLength)
+	}
 	callbackParam := strings.TrimSpace(params["param"])
 	if len(callbackParam) > maxPayIDLength {
 		return nil, fmt.Errorf("param length must not exceed %d", maxPayIDLength)
@@ -149,6 +183,10 @@ func (a *App) parseEpayCreateInput(ctx context.Context, r *http.Request) (*epayC
 	money := strings.TrimSpace(params["money"])
 	if !moneyPattern.MatchString(money) {
 		return nil, errors.New("money format invalid")
+	}
+	moneyValue, err := strconv.ParseFloat(money, 64)
+	if err != nil || moneyValue <= 0 || moneyValue > maxPriceYuan {
+		return nil, fmt.Errorf("money must be between 0.01 and %d", maxPriceYuan)
 	}
 	return &epayCreateInput{
 		PID:        pid,
@@ -338,7 +376,7 @@ func formatEpayTime(millis int64) string {
 	if millis <= 0 {
 		return ""
 	}
-	return time.UnixMilli(millis).Format("2006-01-02 15:04:05")
+	return strconv.FormatInt(time.UnixMilli(millis).Unix(), 10)
 }
 
 func mustParseMoney(raw string) float64 {

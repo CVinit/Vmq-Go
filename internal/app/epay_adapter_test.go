@@ -106,6 +106,189 @@ func TestEpayMAPIRejectsInvalidSignature(t *testing.T) {
 	}
 }
 
+func TestEpayMAPIRejectsZeroMoney(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AllowPrivateCallbacks = true
+	app.cfg.EpayMerchantID = "1000"
+	app.cfg.EpayMerchantKey = "epay-secret-with-at-least-thirty-two-bytes"
+	ctx := context.Background()
+	if err := app.store.UpsertSettings(ctx, map[string]string{"zfbpay": "HTTPS://QR.ALIPAY.COM/TEST"}); err != nil {
+		t.Fatalf("UpsertSettings returned error: %v", err)
+	}
+	form := signedEpayCreateForm(app, map[string]string{
+		"pid":          "1000",
+		"type":         "alipay",
+		"out_trade_no": "DUJIAO202604260011",
+		"param":        "111",
+		"notify_url":   "https://shop.example.com/api/v1/payments/callback",
+		"return_url":   "https://shop.example.com/pay",
+		"name":         "Dujiao order",
+		"money":        "0",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/mapi.php", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	var payload CommonRes
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Code != -1 || !strings.Contains(payload.Msg, "money") {
+		t.Fatalf("expected zero money to be rejected, got %#v", payload)
+	}
+	order, err := app.store.GetOrderByPayID(ctx, "DUJIAO202604260011")
+	if err != nil {
+		t.Fatalf("GetOrderByPayID returned error: %v", err)
+	}
+	if order != nil {
+		t.Fatalf("expected zero money request not to create an order: %#v", order)
+	}
+}
+
+func TestEpayMAPIRejectsTooLongOutTradeNo(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AllowPrivateCallbacks = true
+	app.cfg.EpayMerchantID = "1000"
+	app.cfg.EpayMerchantKey = "epay-secret-with-at-least-thirty-two-bytes"
+	ctx := context.Background()
+	if err := app.store.UpsertSettings(ctx, map[string]string{"zfbpay": "HTTPS://QR.ALIPAY.COM/TEST"}); err != nil {
+		t.Fatalf("UpsertSettings returned error: %v", err)
+	}
+	outTradeNo := strings.Repeat("A", maxPayIDLength+1)
+	form := signedEpayCreateForm(app, map[string]string{
+		"pid":          "1000",
+		"type":         "alipay",
+		"out_trade_no": outTradeNo,
+		"param":        "112",
+		"notify_url":   "https://shop.example.com/api/v1/payments/callback",
+		"return_url":   "https://shop.example.com/pay",
+		"name":         "Dujiao order",
+		"money":        "10.00",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/mapi.php", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	var payload CommonRes
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Code != -1 || !strings.Contains(payload.Msg, "out_trade_no") {
+		t.Fatalf("expected too long out_trade_no to be rejected, got %#v", payload)
+	}
+	order, err := app.store.GetOrderByPayID(ctx, outTradeNo)
+	if err != nil {
+		t.Fatalf("GetOrderByPayID returned error: %v", err)
+	}
+	if order != nil {
+		t.Fatalf("expected too long out_trade_no request not to create an order: %#v", order)
+	}
+}
+
+func TestEpayMAPIDuplicateOrderIsIdempotent(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AllowPrivateCallbacks = true
+	app.cfg.EpayMerchantID = "1000"
+	app.cfg.EpayMerchantKey = "epay-secret-with-at-least-thirty-two-bytes"
+	app.cfg.EpayPublicBaseURL = "https://vmq.example.com"
+	ctx := context.Background()
+	if err := app.store.UpsertSettings(ctx, map[string]string{"zfbpay": "HTTPS://QR.ALIPAY.COM/TEST"}); err != nil {
+		t.Fatalf("UpsertSettings returned error: %v", err)
+	}
+	form := signedEpayCreateForm(app, map[string]string{
+		"pid":          "1000",
+		"type":         "alipay",
+		"out_trade_no": "DUJIAO202604260009",
+		"param":        "109",
+		"notify_url":   "https://shop.example.com/api/v1/payments/callback",
+		"return_url":   "https://shop.example.com/pay",
+		"name":         "Dujiao order",
+		"money":        "10.00",
+	})
+	create := func() map[string]any {
+		req := httptest.NewRequest(http.MethodPost, "/mapi.php", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		app.Handler().ServeHTTP(rec, req)
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		return payload
+	}
+
+	first := create()
+	second := create()
+
+	if first["code"].(float64) != 1 {
+		t.Fatalf("expected first create success, got %#v", first)
+	}
+	if second["code"].(float64) != 1 {
+		t.Fatalf("expected duplicate create to return existing payment, got %#v", second)
+	}
+	if first["trade_no"] != second["trade_no"] || first["payurl"] != second["payurl"] {
+		t.Fatalf("expected duplicate create to be idempotent, first=%#v second=%#v", first, second)
+	}
+}
+
+func TestEpayMAPIDuplicateOrderWithChangedFieldsIsRejected(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AllowPrivateCallbacks = true
+	app.cfg.EpayMerchantID = "1000"
+	app.cfg.EpayMerchantKey = "epay-secret-with-at-least-thirty-two-bytes"
+	ctx := context.Background()
+	if err := app.store.UpsertSettings(ctx, map[string]string{"zfbpay": "HTTPS://QR.ALIPAY.COM/TEST"}); err != nil {
+		t.Fatalf("UpsertSettings returned error: %v", err)
+	}
+	baseFields := map[string]string{
+		"pid":          "1000",
+		"type":         "alipay",
+		"out_trade_no": "DUJIAO202604260012",
+		"param":        "112",
+		"notify_url":   "https://shop.example.com/api/v1/payments/callback",
+		"return_url":   "https://shop.example.com/pay",
+		"name":         "Dujiao order",
+		"money":        "10.00",
+	}
+	first := signedEpayCreateForm(app, baseFields)
+	firstReq := httptest.NewRequest(http.MethodPost, "/mapi.php", strings.NewReader(first.Encode()))
+	firstReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	firstRec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(firstRec, firstReq)
+
+	changedFields := map[string]string{}
+	for key, value := range baseFields {
+		changedFields[key] = value
+	}
+	changedFields["money"] = "11.00"
+	changedFields["notify_url"] = "https://attacker.example.com/callback"
+	second := signedEpayCreateForm(app, changedFields)
+	secondReq := httptest.NewRequest(http.MethodPost, "/mapi.php", strings.NewReader(second.Encode()))
+	secondReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	secondRec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(secondRec, secondReq)
+
+	var payload CommonRes
+	if err := json.Unmarshal(secondRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Code != -1 || !strings.Contains(payload.Msg, "different epay order fields") {
+		t.Fatalf("expected changed duplicate fields to be rejected, got %#v", payload)
+	}
+	order, err := app.store.GetOrderByPayID(ctx, "DUJIAO202604260012")
+	if err != nil || order == nil {
+		t.Fatalf("expected original order to exist, order=%#v err=%v", order, err)
+	}
+	if order.Price != 10 || order.NotifyURL != baseFields["notify_url"] {
+		t.Fatalf("expected original order fields to stay unchanged, got %#v", order)
+	}
+}
+
 func TestEpayCallbackUsesOriginalAmountAndSignsDujiaoPayload(t *testing.T) {
 	app := newTestApp(t)
 	app.cfg.AllowPrivateCallbacks = true
@@ -179,6 +362,25 @@ func TestEpayCallbackUsesOriginalAmountAndSignsDujiaoPayload(t *testing.T) {
 	}
 	if !verifyEpaySign(valuesToMap(callback), app.cfg.EpayMerchantKey) {
 		t.Fatalf("expected Dujiao callback signature to verify, got %v", callback)
+	}
+}
+
+func TestEpayCallbackEndtimeUsesUnixSecondsForDujiaoNext(t *testing.T) {
+	app := newTestApp(t)
+	order := &PayOrder{
+		OrderID: "VMQORDER-ENDTIME",
+		PayID:   "DUJIAO202604260010",
+		Param:   epayOrderParam("alipay", "110"),
+		Type:    2,
+		Price:   10,
+		PayDate: app.now().UnixMilli(),
+	}
+
+	params := app.buildEpayCallbackParams(order, "alipay", "110", "epay-secret-with-at-least-thirty-two-bytes")
+
+	want := strconv.FormatInt(app.now().Unix(), 10)
+	if got := params["endtime"]; got != want {
+		t.Fatalf("expected Dujiao-Next parsable Unix seconds endtime %q, got %q", want, got)
 	}
 }
 
