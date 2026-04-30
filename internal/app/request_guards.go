@@ -28,17 +28,21 @@ func requireSameOrigin(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func sameOriginRequest(r *http.Request) bool {
-	for _, raw := range []string{r.Header.Get("Origin"), r.Header.Get("Referer")} {
-		if raw == "" {
-			continue
-		}
-		u, err := url.Parse(raw)
-		if err != nil || u.Host == "" {
-			return false
-		}
-		return u.Host == r.Host
+	if raw := r.Header.Get("Origin"); raw != "" {
+		return sameOriginURL(raw, r.Host)
 	}
-	return true
+	if raw := r.Header.Get("Referer"); raw != "" {
+		return sameOriginURL(raw, r.Host)
+	}
+	return false
+}
+
+func sameOriginURL(raw, host string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Host == host
 }
 
 func adminPostOnly(next http.HandlerFunc) http.HandlerFunc {

@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -60,6 +62,8 @@ func TestBootstrapDefaultsCreatesSeparateDeviceKey(t *testing.T) {
 func TestAdminGetMenuUnauthenticatedReturnsNull(t *testing.T) {
 	app := newTestApp(t)
 	req := httptest.NewRequest(http.MethodPost, "/admin/getMenu", nil)
+	req.Host = "vmq.example.com"
+	req.Header.Set("Origin", "https://vmq.example.com")
 	rec := httptest.NewRecorder()
 
 	app.Handler().ServeHTTP(rec, req)
@@ -146,6 +150,29 @@ func TestAdminEndpointRejectsCrossOriginRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/admin/getSettings", nil)
 	req.Host = "vmq.example.com"
 	req.Header.Set("Origin", "https://evil.example.net")
+	req.AddCookie(cookies[0])
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
+func TestAdminEndpointRejectsMissingOriginAndReferer(t *testing.T) {
+	app := newTestApp(t)
+	cookieRec := httptest.NewRecorder()
+	if err := app.setAdminCookie(context.Background(), cookieRec); err != nil {
+		t.Fatalf("setAdminCookie returned error: %v", err)
+	}
+	cookies := cookieRec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected admin cookie to be set")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/getSettings", nil)
+	req.Host = "vmq.example.com"
 	req.AddCookie(cookies[0])
 	rec := httptest.NewRecorder()
 
@@ -805,6 +832,8 @@ func TestAdminSaveSettingRejectsWeakSecurityConfig(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/saveSetting", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "vmq.example.com"
+	req.Header.Set("Origin", "https://vmq.example.com")
 	req.AddCookie(cookies[0])
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
@@ -830,6 +859,8 @@ func TestAdminGetSettingsDoesNotExposePassword(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/getSettings", nil)
+	req.Host = "vmq.example.com"
+	req.Header.Set("Origin", "https://vmq.example.com")
 	req.AddCookie(cookies[0])
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
@@ -882,6 +913,8 @@ func TestAdminSaveSettingKeepsExistingPasswordWhenBlank(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/saveSetting", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "vmq.example.com"
+	req.Header.Set("Origin", "https://vmq.example.com")
 	req.AddCookie(cookies[0])
 	rec := httptest.NewRecorder()
 	app.Handler().ServeHTTP(rec, req)
@@ -909,6 +942,8 @@ func TestQRCodeDecodeRequiresAdmin(t *testing.T) {
 	form.Set("base64", "ZmFrZQ==")
 	req := httptest.NewRequest(http.MethodPost, "/deQrcode", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "vmq.example.com"
+	req.Header.Set("Origin", "https://vmq.example.com")
 	rec := httptest.NewRecorder()
 
 	app.Handler().ServeHTTP(rec, req)
@@ -938,6 +973,70 @@ func TestValidateOutboundCallbackURLRejectsLocalhostAlias(t *testing.T) {
 	err := validateOutboundCallbackURL("http://localhost./callback", false)
 	if err == nil {
 		t.Fatal("expected localhost alias callback to be rejected")
+	}
+}
+
+func TestValidateOutboundCallbackURLRejectsUnspecifiedIP(t *testing.T) {
+	err := validateOutboundCallbackURL("http://0.0.0.0/callback", false)
+	if err == nil {
+		t.Fatal("expected unspecified callback IP to be rejected")
+	}
+}
+
+func TestSafeOutboundDialerRejectsPrivateResolvedIP(t *testing.T) {
+	dialer := safeOutboundDialer{
+		resolver: fakeIPResolver{addrs: []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}},
+	}
+
+	conn, err := dialer.DialContext(context.Background(), "tcp", "callback.example:80")
+
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "private network callbacks are not allowed") {
+		t.Fatalf("expected private resolved IP to be rejected, got conn=%v err=%v", conn, err)
+	}
+}
+
+func TestRandomHexSecretFromReaderFailsClosed(t *testing.T) {
+	secret, err := randomHexSecretFromReader(failingReader{}, 32)
+	if err == nil {
+		t.Fatalf("expected random secret generation to fail closed, got secret %q", secret)
+	}
+
+	secret, err = randomHexSecretFromReader(nil, 32)
+	if err == nil {
+		t.Fatalf("expected nil random reader to fail closed, got secret %q", secret)
+	}
+}
+
+func TestDashboardStatsCountsNotificationFailedPaidOrdersInTotal(t *testing.T) {
+	app := newTestApp(t)
+	ctx := context.Background()
+	order := &PayOrder{
+		OrderID:     "VMQORDER-STATE2",
+		PayID:       "merchant-state2",
+		CreateDate:  app.now().UnixMilli(),
+		PayDate:     app.now().UnixMilli(),
+		CloseDate:   app.now().UnixMilli(),
+		Param:       "demo",
+		Type:        1,
+		Price:       12.34,
+		ReallyPrice: 12.34,
+		State:       2,
+		IsAuto:      1,
+		PayURL:      "weixin://test-pay",
+	}
+	if err := app.store.CreateOrder(ctx, order); err != nil {
+		t.Fatalf("CreateOrder returned error: %v", err)
+	}
+
+	stats, err := app.store.GetDashboardStats(ctx, app.now().Add(-time.Hour).UnixMilli(), app.now().Add(time.Hour).UnixMilli())
+	if err != nil {
+		t.Fatalf("GetDashboardStats returned error: %v", err)
+	}
+	if stats.CountOrder != 1 {
+		t.Fatalf("expected state=2 paid order to count in total paid orders, got %d", stats.CountOrder)
 	}
 }
 
@@ -1143,4 +1242,19 @@ func mustClientIPResolver(t *testing.T, cfg Config) *clientIPResolver {
 		t.Fatalf("newClientIPResolver returned error: %v", err)
 	}
 	return resolver
+}
+
+type fakeIPResolver struct {
+	addrs []net.IPAddr
+	err   error
+}
+
+func (r fakeIPResolver) LookupIPAddr(_ context.Context, _ string) ([]net.IPAddr, error) {
+	return r.addrs, r.err
+}
+
+type failingReader struct{}
+
+func (failingReader) Read(_ []byte) (int, error) {
+	return 0, errors.New("entropy unavailable")
 }

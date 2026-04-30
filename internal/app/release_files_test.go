@@ -100,6 +100,54 @@ func TestReleaseComposePullsPublishedImage(t *testing.T) {
 	}
 }
 
+func TestComposeDatabaseURLUsesConfiguredPostgresPassword(t *testing.T) {
+	for _, name := range []string{"docker-compose.yml", "docker-compose.ghcr.yml"} {
+		content, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatalf("read compose file %s: %v", name, err)
+		}
+		compose := string(content)
+		if strings.Contains(compose, "postgres://vmq:vmq@postgres") {
+			t.Fatalf("expected %s not to default app DATABASE_URL to vmq/vmq credentials", name)
+		}
+		if strings.Contains(compose, "POSTGRES_PASSWORD:-vmq") {
+			t.Fatalf("expected %s not to default postgres service password to vmq", name)
+		}
+		if !strings.Contains(compose, "POSTGRES_PASSWORD") || !strings.Contains(compose, "DATABASE_URL") {
+			t.Fatalf("expected %s to derive DATABASE_URL from configured postgres credentials", name)
+		}
+		if !strings.Contains(compose, "${DATABASE_URL:-") {
+			t.Fatalf("expected %s to preserve explicit DATABASE_URL overrides", name)
+		}
+	}
+
+	content, err := os.ReadFile(filepath.Join("..", "..", ".env.example"))
+	if err != nil {
+		t.Fatalf("read .env.example: %v", err)
+	}
+	envExample := string(content)
+	if strings.Contains(envExample, "postgres://vmq:vmq@postgres") {
+		t.Fatal("expected .env.example not to document vmq/vmq database credentials")
+	}
+}
+
+func TestDefaultDatabaseURLDoesNotUseVMQPassword(t *testing.T) {
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("POSTGRES_USER", "vmq")
+	t.Setenv("POSTGRES_PASSWORD", "replace-postgres-password")
+	t.Setenv("POSTGRES_DB", "vmq")
+	t.Setenv("POSTGRES_HOST", "postgres")
+	t.Setenv("POSTGRES_PORT", "5432")
+
+	cfg := LoadConfig()
+	if strings.Contains(cfg.DatabaseURL, "postgres://vmq:vmq@postgres") {
+		t.Fatalf("expected generated DatabaseURL not to use vmq/vmq credentials, got %q", cfg.DatabaseURL)
+	}
+	if !strings.Contains(cfg.DatabaseURL, "replace-postgres-password") {
+		t.Fatalf("expected generated DatabaseURL to include configured POSTGRES_PASSWORD, got %q", cfg.DatabaseURL)
+	}
+}
+
 func TestReleaseGuideDocumentsVersioningConventions(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "docs", "RELEASING.md"))
 	if err != nil {

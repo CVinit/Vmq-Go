@@ -35,18 +35,13 @@ func New(cfg Config, store Store) (*App, error) {
 		return nil, err
 	}
 	app := &App{
-		cfg:   cfg,
-		store: store,
-		client: &http.Client{
-			Timeout: cfg.HTTPClientTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
+		cfg:           cfg,
+		store:         store,
 		now:           time.Now,
 		loginThrottle: newLoginThrottle(),
 		clientIPs:     clientIPs,
 	}
+	app.client = newOutboundHTTPClient(&app.cfg)
 
 	if err := store.BootstrapDefaults(context.Background(), app.now(), cfg); err != nil {
 		return nil, err
@@ -320,7 +315,12 @@ func (a *App) handleAdminSaveSetting(w http.ResponseWriter, r *http.Request) {
 	}
 	deviceKey := current["deviceKey"]
 	if deviceKey == "" {
-		deviceKey = newRandomHexSecret(32)
+		generated, err := newRandomHexSecret(32)
+		if err != nil {
+			a.writeJSON(w, errorOnly())
+			return
+		}
+		deviceKey = generated
 		values["deviceKey"] = deviceKey
 	}
 	if err := validateSharedSecret("device key", deviceKey, a.cfg.AllowInsecureDefaults); err != nil {
@@ -397,7 +397,15 @@ func (a *App) handleAdminSetBd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if epayType, callbackParam, ok := parseEpayOrderParam(order.Param); ok {
-		resp := a.sendEpayNotify(r.Context(), order, epayType, callbackParam)
+		nowMillis := a.now().UnixMilli()
+		callbackOrder := *order
+		if callbackOrder.PayDate <= 0 {
+			callbackOrder.PayDate = nowMillis
+		}
+		if callbackOrder.CloseDate <= 0 {
+			callbackOrder.CloseDate = nowMillis
+		}
+		resp := a.sendEpayNotify(r.Context(), &callbackOrder, epayType, callbackParam)
 		if resp != epayCallbackSuccess {
 			a.writeJSON(w, errorResCode(-2, resp))
 			return
@@ -406,6 +414,12 @@ func (a *App) handleAdminSetBd(w http.ResponseWriter, r *http.Request) {
 			_ = a.store.ReleasePrice(r.Context(), priceKey(order.Type, order.ReallyPrice))
 		}
 		order.State = 1
+		if order.PayDate <= 0 {
+			order.PayDate = callbackOrder.PayDate
+		}
+		if order.CloseDate <= 0 {
+			order.CloseDate = callbackOrder.CloseDate
+		}
 		if err := a.store.UpdateOrder(r.Context(), order); err != nil {
 			a.writeJSON(w, errorOnly())
 			return
@@ -436,6 +450,13 @@ func (a *App) handleAdminSetBd(w http.ResponseWriter, r *http.Request) {
 		_ = a.store.ReleasePrice(r.Context(), priceKey(order.Type, order.ReallyPrice))
 	}
 	order.State = 1
+	nowMillis := a.now().UnixMilli()
+	if order.PayDate <= 0 {
+		order.PayDate = nowMillis
+	}
+	if order.CloseDate <= 0 {
+		order.CloseDate = nowMillis
+	}
 	if err := a.store.UpdateOrder(r.Context(), order); err != nil {
 		a.writeJSON(w, errorOnly())
 		return

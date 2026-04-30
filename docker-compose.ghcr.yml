@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-vmq}
       POSTGRES_USER: ${POSTGRES_USER:-vmq}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vmq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -27,7 +27,7 @@ services:
       ADMIN_USER: ${ADMIN_USER}
       ADMIN_PASS: ${ADMIN_PASS}
       COOKIE_SECURE: ${COOKIE_SECURE:-0}
-      DATABASE_URL: ${DATABASE_URL:-postgres://vmq:vmq@postgres:5432/vmq?sslmode=disable}
+      DATABASE_URL: "${DATABASE_URL:-postgres://${POSTGRES_USER:-vmq}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-vmq}?sslmode=disable}"
       ADMIN_SESSION_TTL_HOURS: ${ADMIN_SESSION_TTL_HOURS:-720}
       ALLOW_INSECURE_DEV_DEFAULTS: ${ALLOW_INSECURE_DEV_DEFAULTS:-0}
       ALLOW_PRIVATE_CALLBACKS: ${ALLOW_PRIVATE_CALLBACKS:-0}

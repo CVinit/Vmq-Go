@@ -102,6 +102,35 @@ func TestAdminShellPublishesGlobalJQueryBeforeLoadingFragments(t *testing.T) {
 	}
 }
 
+func TestHTMLPagesLoadLayuiRuntimeBeforeUse(t *testing.T) {
+	webRoot := filepath.Join("..", "..", "src", "main", "webapp")
+	err := filepath.WalkDir(webRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".html" {
+			return nil
+		}
+
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		page := stripHTMLComments(string(content))
+		useIndex := strings.Index(page, "layui.use(")
+		if useIndex == -1 {
+			return nil
+		}
+		if !strings.Contains(page[:useIndex], "layui/layui.js") && !strings.Contains(page[:useIndex], "layui.all.js") {
+			t.Errorf("%s uses layui before loading the Layui runtime", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk web root: %v", err)
+	}
+}
+
 func TestAlipayGuideOnlyLaunchesWalletWithTargetURL(t *testing.T) {
 	path := filepath.Join("..", "..", "src", "main", "webapp", "payPage", "go_alipay.html")
 	content, err := os.ReadFile(path)
@@ -111,6 +140,42 @@ func TestAlipayGuideOnlyLaunchesWalletWithTargetURL(t *testing.T) {
 	page := string(content)
 	if !strings.Contains(page, "if (url) {") || !strings.Contains(page, "AlipayWallet.open({") {
 		t.Fatal("expected alipay guide page to launch the wallet only when a target URL is present")
+	}
+}
+
+func TestBundledJQueryModuleUsesPatchedVersion(t *testing.T) {
+	path := filepath.Join("..", "..", "src", "main", "webapp", "layui", "lay", "modules", "jquery.js")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read bundled jquery module: %v", err)
+	}
+	module := string(content)
+	if strings.Contains(module, `de="1.12.3"`) || strings.Contains(module, "jQuery JavaScript Library v1.") {
+		t.Fatal("expected bundled jquery module not to ship the vulnerable 1.x line")
+	}
+	if !strings.Contains(module, "jQuery JavaScript Library v3.7.1") {
+		t.Fatal("expected bundled jquery module to contain patched jQuery 3.7.1")
+	}
+
+	webRoot := filepath.Join("..", "..", "src", "main", "webapp", "layui")
+	err = filepath.WalkDir(webRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".js" {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(content), `de="1.12.3"`) || strings.Contains(string(content), "jQuery JavaScript Library v1.") {
+			t.Errorf("expected %s not to bundle vulnerable jQuery 1.x code", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk layui assets: %v", err)
 	}
 }
 

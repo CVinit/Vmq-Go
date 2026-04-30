@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"regexp"
@@ -249,13 +250,27 @@ func validateOutboundCallbackURL(raw string, allowPrivate bool) error {
 }
 
 func isPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified() ||
+		ip.IsMulticast() {
+		return true
+	}
 	privateCIDRs := []string{
 		"127.0.0.0/8",
+		"0.0.0.0/8",
 		"10.0.0.0/8",
+		"100.64.0.0/10",
 		"172.16.0.0/12",
 		"192.168.0.0/16",
 		"169.254.0.0/16",
 		"::1/128",
+		"::/128",
 		"fc00::/7",
 		"fe80::/10",
 	}
@@ -286,15 +301,22 @@ func orderAccessToken(orderID, secret string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func newRandomHexSecret(byteLen int) string {
+func newRandomHexSecret(byteLen int) (string, error) {
+	return randomHexSecretFromReader(rand.Reader, byteLen)
+}
+
+func randomHexSecretFromReader(reader io.Reader, byteLen int) (string, error) {
+	if reader == nil {
+		return "", errors.New("random reader is required")
+	}
 	if byteLen <= 0 {
 		byteLen = 32
 	}
 	buf := make([]byte, byteLen)
-	if _, err := rand.Read(buf); err == nil {
-		return hex.EncodeToString(buf)
+	if _, err := io.ReadFull(reader, buf); err != nil {
+		return "", fmt.Errorf("random secret generation failed: %w", err)
 	}
-	return md5Hex(fmt.Sprintf("%d", time.Now().UnixNano())) + md5Hex(fmt.Sprintf("%d", time.Now().UnixNano()+1))
+	return hex.EncodeToString(buf), nil
 }
 
 func secureEqual(left, right string) bool {

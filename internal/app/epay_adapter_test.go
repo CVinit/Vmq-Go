@@ -424,6 +424,8 @@ func TestEpayAdminBackfillUsesEpayCallback(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/admin/setBd", strings.NewReader(url.Values{"id": []string{strconv.FormatInt(order.ID, 10)}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "vmq.example.com"
+	req.Header.Set("Origin", "https://vmq.example.com")
 	req.AddCookie(cookieRec.Result().Cookies()[0])
 	rec := httptest.NewRecorder()
 
@@ -448,6 +450,9 @@ func TestEpayAdminBackfillUsesEpayCallback(t *testing.T) {
 	if got := callback.Get("param"); got != "207" {
 		t.Fatalf("unexpected param %q", got)
 	}
+	if got := callback.Get("endtime"); got != strconv.FormatInt(app.now().Unix(), 10) {
+		t.Fatalf("expected backfill callback endtime to use current Unix seconds, got %q", got)
+	}
 	if !verifyEpaySign(valuesToMap(callback), app.cfg.EpayMerchantKey) {
 		t.Fatalf("expected Dujiao callback signature to verify, got %v", callback)
 	}
@@ -457,6 +462,9 @@ func TestEpayAdminBackfillUsesEpayCallback(t *testing.T) {
 	}
 	if stored.State != 1 {
 		t.Fatalf("expected backfilled order state to be paid, got %d", stored.State)
+	}
+	if stored.PayDate != app.now().UnixMilli() || stored.CloseDate != app.now().UnixMilli() {
+		t.Fatalf("expected backfilled order payment timestamps to be stored, got payDate=%d closeDate=%d", stored.PayDate, stored.CloseDate)
 	}
 }
 

@@ -518,7 +518,7 @@ func (s *PostgresStore) GetDashboardStats(ctx context.Context, start, end int64)
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(price), 0) FROM pay_orders WHERE create_date >= $1 AND create_date <= $2 AND state IN (1, 2)`, start, end).Scan(&stats.TodayMoney); err != nil {
 		return stats, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(COUNT(*), 0) FROM pay_orders WHERE state = 1`).Scan(&stats.CountOrder); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(COUNT(*), 0) FROM pay_orders WHERE state IN (1, 2)`).Scan(&stats.CountOrder); err != nil {
 		return stats, err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(price), 0) FROM pay_orders WHERE state IN (1, 2)`).Scan(&stats.CountMoney); err != nil {
@@ -900,7 +900,7 @@ func (m *MemoryStore) GetDashboardStats(_ context.Context, start, end int64) (Da
 				stats.TodayCloseOrder++
 			}
 		}
-		if order.State == 1 {
+		if order.State == 1 || order.State == 2 {
 			stats.CountOrder++
 		}
 		if order.State == 1 || order.State == 2 {
@@ -938,13 +938,21 @@ func defaultSettings(now time.Time, cfg Config) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	merchantKey, err := newRandomHexSecret(32)
+	if err != nil {
+		return nil, err
+	}
+	deviceKey, err := newRandomHexSecret(32)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]string{
 		"user":      adminUser,
 		"pass":      hashedPass,
 		"notifyUrl": "",
 		"returnUrl": "",
-		"key":       newRandomHexSecret(32),
-		"deviceKey": newRandomHexSecret(32),
+		"key":       merchantKey,
+		"deviceKey": deviceKey,
 		"lastheart": "0",
 		"lastpay":   "0",
 		"jkstate":   "-1",

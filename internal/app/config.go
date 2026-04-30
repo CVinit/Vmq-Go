@@ -1,6 +1,8 @@
 package app
 
 import (
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -29,7 +31,7 @@ type Config struct {
 func LoadConfig() Config {
 	cfg := Config{
 		Port:                  getEnv("APP_PORT", "8080"),
-		DatabaseURL:           getEnv("DATABASE_URL", "postgres://vmq:vmq@postgres:5432/vmq?sslmode=disable"),
+		DatabaseURL:           databaseURLFromEnv(),
 		SessionSecret:         getEnv("SESSION_SECRET", "change-me-to-a-long-random-string"),
 		BootstrapAdminUser:    getEnv("ADMIN_USER", "admin"),
 		BootstrapAdminPass:    getEnv("ADMIN_PASS", "admin"),
@@ -65,6 +67,28 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func databaseURLFromEnv() string {
+	if value := os.Getenv("DATABASE_URL"); value != "" {
+		return value
+	}
+	u := url.URL{
+		Scheme: "postgres",
+		User: url.UserPassword(
+			getEnv("POSTGRES_USER", "vmq"),
+			getEnv("POSTGRES_PASSWORD", "replace-postgres-password"),
+		),
+		Host: net.JoinHostPort(
+			getEnv("POSTGRES_HOST", "postgres"),
+			getEnv("POSTGRES_PORT", "5432"),
+		),
+		Path: "/" + getEnv("POSTGRES_DB", "vmq"),
+	}
+	q := u.Query()
+	q.Set("sslmode", "disable")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func splitCSVEnv(key string) []string {
