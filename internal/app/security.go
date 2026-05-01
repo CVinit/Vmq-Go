@@ -104,7 +104,7 @@ func validateStoredSecurity(settings map[string]string, allowInsecure bool) erro
 	return nil
 }
 
-func validateAdminSettingsInput(user, pass, notifyURL, returnURL string, allowInsecure, allowPrivateCallbacks bool) error {
+func validateAdminSettingsInput(user, pass, notifyURL, returnURL, wxpay, zfbpay string, allowInsecure, allowPrivateCallbacks bool) error {
 	if len(user) == 0 || len(user) > maxPayIDLength {
 		return fmt.Errorf("账号长度必须在1到%d之间", maxPayIDLength)
 	}
@@ -125,6 +125,12 @@ func validateAdminSettingsInput(user, pass, notifyURL, returnURL string, allowIn
 		if err := validateCallbackURL(returnURL, maxReturnURLLength, true); err != nil {
 			return fmt.Errorf("returnUrl不合法: %w", err)
 		}
+	}
+	if err := validateOptionalQRCodePayload("微信收款码", wxpay); err != nil {
+		return err
+	}
+	if err := validateOptionalQRCodePayload("支付宝收款码", zfbpay); err != nil {
+		return err
 	}
 	return nil
 }
@@ -186,6 +192,51 @@ func validateCreateOrderInput(payID, param, priceRaw, notifyURL, returnURL strin
 		return fmt.Errorf("invalid returnUrl: %w", err)
 	}
 	return nil
+}
+
+func validateQRCodePayload(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", errors.New("qrcode content is required")
+	}
+	if len(value) > maxQRCodePayloadLength {
+		return "", fmt.Errorf("qrcode content must not exceed %d bytes", maxQRCodePayloadLength)
+	}
+	return value, nil
+}
+
+func validateOptionalQRCodePayload(label, raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	if _, err := validateQRCodePayload(raw); err != nil {
+		return fmt.Errorf("%s不合法: %w", label, err)
+	}
+	return nil
+}
+
+func validateAdminPayQRCodeInput(priceRaw, payTypeRaw, payURLRaw string) (float64, int, string, error) {
+	if !moneyPattern.MatchString(priceRaw) {
+		return 0, 0, "", errors.New("金额格式错误")
+	}
+	price, err := strconv.ParseFloat(priceRaw, 64)
+	if err != nil {
+		return 0, 0, "", errors.New("金额格式错误")
+	}
+	if price <= 0 || price > maxPriceYuan {
+		return 0, 0, "", fmt.Errorf("金额必须在0.01到%d之间", maxPriceYuan)
+	}
+
+	payType, err := strconv.Atoi(payTypeRaw)
+	if err != nil || (payType != 1 && payType != 2) {
+		return 0, 0, "", errors.New("收款码类型只允许1或2")
+	}
+
+	payURL, err := validateQRCodePayload(payURLRaw)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	return round2(price), payType, payURL, nil
 }
 
 func validateCallbackURL(raw string, maxLength int, allowEmpty bool) error {

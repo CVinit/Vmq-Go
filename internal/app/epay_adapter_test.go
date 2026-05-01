@@ -68,6 +68,35 @@ func TestEpayMAPICreatesVMQOrderAndReturnsPayURL(t *testing.T) {
 	}
 }
 
+func TestEpayPublicBaseURLIgnoresUntrustedForwardedProto(t *testing.T) {
+	app := newTestApp(t)
+	req := httptest.NewRequest(http.MethodPost, "/mapi.php", nil)
+	req.Host = "vmq.example.com"
+	req.RemoteAddr = "198.51.100.10:12345"
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	if got := app.epayPublicBaseURL(req); got != "http://vmq.example.com" {
+		t.Fatalf("expected untrusted forwarded proto to be ignored, got %q", got)
+	}
+}
+
+func TestEpayPublicBaseURLUsesTrustedForwardedProto(t *testing.T) {
+	app := newTestApp(t)
+	resolver, err := newClientIPResolver(Config{TrustedProxyCIDRs: []string{"10.0.0.0/8"}})
+	if err != nil {
+		t.Fatalf("newClientIPResolver returned error: %v", err)
+	}
+	app.clientIPs = resolver
+	req := httptest.NewRequest(http.MethodPost, "/mapi.php", nil)
+	req.Host = "vmq.example.com"
+	req.RemoteAddr = "10.0.0.2:12345"
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	if got := app.epayPublicBaseURL(req); got != "https://vmq.example.com" {
+		t.Fatalf("expected trusted forwarded proto to be used, got %q", got)
+	}
+}
+
 func TestEpayMAPIRejectsInvalidSignature(t *testing.T) {
 	app := newTestApp(t)
 	app.cfg.AllowPrivateCallbacks = true

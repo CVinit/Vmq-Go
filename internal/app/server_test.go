@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"hash/crc32"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -286,6 +288,18 @@ func TestQRCodeImageDisablesCaching(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Type"); got != "image/png" {
 		t.Fatalf("expected png content type, got %q", got)
+	}
+}
+
+func TestQRCodeImageRejectsOversizedContent(t *testing.T) {
+	app := newTestApp(t)
+	req := httptest.NewRequest(http.MethodGet, "/enQrcode?url="+url.QueryEscape(strings.Repeat("a", maxQRCodePayloadLength+1)), nil)
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized QR payload, got %d", rec.Code)
 	}
 }
 
@@ -847,6 +861,45 @@ func TestAdminSaveSettingRejectsWeakSecurityConfig(t *testing.T) {
 	}
 }
 
+func TestAdminSaveSettingRejectsOversizedFixedQRCode(t *testing.T) {
+	app := newTestApp(t)
+	cookieRec := httptest.NewRecorder()
+	if err := app.setAdminCookie(context.Background(), cookieRec); err != nil {
+		t.Fatalf("setAdminCookie returned error: %v", err)
+	}
+	cookies := cookieRec.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("expected admin cookie to be set")
+	}
+
+	form := url.Values{}
+	form.Set("user", "rootadmin")
+	form.Set("pass", "")
+	form.Set("notifyUrl", "https://example.com/callback")
+	form.Set("returnUrl", "https://merchant.example.com/return")
+	form.Set("key", strings.Repeat("k", 32))
+	form.Set("wxpay", strings.Repeat("w", maxQRCodePayloadLength+1))
+	form.Set("zfbpay", "alipay://pay")
+	form.Set("close", "5")
+	form.Set("payQf", "1")
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/saveSetting", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "vmq.example.com"
+	req.Header.Set("Origin", "https://vmq.example.com")
+	req.AddCookie(cookies[0])
+	rec := httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, req)
+
+	var payload CommonRes
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal saveSetting response: %v", err)
+	}
+	if payload.Code != -1 {
+		t.Fatalf("expected oversized fixed QR code to be rejected, got %+v", payload)
+	}
+}
+
 func TestAdminGetSettingsDoesNotExposePassword(t *testing.T) {
 	app := newTestApp(t)
 	cookieRec := httptest.NewRecorder()
@@ -955,6 +1008,115 @@ func TestQRCodeDecodeRequiresAdmin(t *testing.T) {
 	if payload.Code != -1 || payload.Msg != "未登录" {
 		t.Fatalf("expected unauthenticated QR decode to be rejected, got %+v", payload)
 	}
+}
+
+func TestDecodeQRCodeRejectsOversizedBase64Payload(t *testing.T) {
+	app := newTestApp(t)
+	cookieRec := httptest.NewRecorder()
+	if err := app.setAdminCookie(context.Background(), cookieRec); err != nil {
+		t.Fatalf("setAdminCookie returned error: %v", err)
+	}
+
+	form := url.Values{}
+	form.Set("base64", strings.Repeat("A", maxQRCodeBase64Length+1))
+	req := httptest.NewRequest(http.MethodPost, "/deQrcode", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "vmq.example.com"
+	req.Header.Set("Origin", "https://vmq.example.com")
+	req.AddCookie(cookieRec.Result().Cookies()[0])
+	rec := httptest.NewRecorder()
+
+	app.Handler().ServeHTTP(rec, req)
+
+	var payload CommonRes
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal deQrcode response: %v", err)
+	}
+	if payload.Code != -1 {
+		t.Fatalf("expected oversized QR decode to be rejected, got %+v", payload)
+	}
+}
+
+func TestDecodeQRCodeRejectsOversizedImageDimensions(t *testing.T) {
+	payload := pngWithDimensions(100000, 100000)
+
+	if _, err := decodeQRCodeBytes(payload); err == nil {
+		t.Fatal("expected oversized QR image dimensions to be rejected")
+	}
+}
+
+func TestAdminAddPayQRCodeRejectsUnsafeInput(t *testing.T) {
+	app := newTestApp(t)
+	cookieRec := httptest.NewRecorder()
+	if err := app.setAdminCookie(context.Background(), cookieRec); err != nil {
+		t.Fatalf("setAdminCookie returned error: %v", err)
+	}
+	cookie := cookieRec.Result().Cookies()[0]
+
+	tests := []struct {
+		name string
+		form url.Values
+	}{
+		{
+			name: "negative price",
+			form: url.Values{"type": {"1"}, "price": {"-1"}, "payUrl": {"weixin://pay"}},
+		},
+		{
+			name: "unsupported type",
+			form: url.Values{"type": {"99"}, "price": {"10.00"}, "payUrl": {"weixin://pay"}},
+		},
+		{
+			name: "too many decimals",
+			form: url.Values{"type": {"1"}, "price": {"10.001"}, "payUrl": {"weixin://pay"}},
+		},
+		{
+			name: "oversized pay url",
+			form: url.Values{"type": {"1"}, "price": {"10.00"}, "payUrl": {strings.Repeat("a", maxQRCodePayloadLength+1)}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/admin/addPayQrcode", strings.NewReader(tt.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Host = "vmq.example.com"
+			req.Header.Set("Origin", "https://vmq.example.com")
+			req.AddCookie(cookie)
+			rec := httptest.NewRecorder()
+
+			app.Handler().ServeHTTP(rec, req)
+
+			var payload CommonRes
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("unmarshal addPayQrcode response: %v", err)
+			}
+			if payload.Code != -1 {
+				t.Fatalf("expected unsafe QR input to be rejected, got %+v", payload)
+			}
+		})
+	}
+}
+
+func pngWithDimensions(width, height uint32) []byte {
+	out := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], width)
+	binary.BigEndian.PutUint32(ihdr[4:8], height)
+	ihdr[8] = 8
+	ihdr[9] = 2
+	out = append(out, pngChunk("IHDR", ihdr)...)
+	out = append(out, pngChunk("IEND", nil)...)
+	return out
+}
+
+func pngChunk(name string, data []byte) []byte {
+	chunk := make([]byte, 8+len(data)+4)
+	binary.BigEndian.PutUint32(chunk[0:4], uint32(len(data)))
+	copy(chunk[4:8], name)
+	copy(chunk[8:], data)
+	crc := crc32.ChecksumIEEE(chunk[4 : 8+len(data)])
+	binary.BigEndian.PutUint32(chunk[8+len(data):], crc)
+	return chunk
 }
 
 func TestValidateConfigRejectsWeakDefaults(t *testing.T) {

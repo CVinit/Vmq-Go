@@ -275,7 +275,7 @@ func (a *App) handleAdminSaveSetting(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, errorOnly())
 		return
 	}
-	if err := validateAdminSettingsInput(values["user"], values["pass"], values["notifyUrl"], values["returnUrl"], a.cfg.AllowInsecureDefaults, a.cfg.AllowPrivateCallbacks); err != nil {
+	if err := validateAdminSettingsInput(values["user"], values["pass"], values["notifyUrl"], values["returnUrl"], values["wxpay"], values["zfbpay"], a.cfg.AllowInsecureDefaults, a.cfg.AllowPrivateCallbacks); err != nil {
 		a.writeJSON(w, errorRes(err.Error()))
 		return
 	}
@@ -500,25 +500,19 @@ func (a *App) handleAdminAddPayQrcode(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, errorRes("未登录"))
 		return
 	}
-	_ = r.ParseForm()
-	price, err := strconv.ParseFloat(r.FormValue("price"), 64)
-	if err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxQRCodePayloadForm)
+	if err := r.ParseForm(); err != nil {
 		a.writeJSON(w, errorOnly())
 		return
 	}
-	payType, err := strconv.Atoi(r.FormValue("type"))
+	price, payType, payURL, err := validateAdminPayQRCodeInput(r.FormValue("price"), r.FormValue("type"), r.FormValue("payUrl"))
 	if err != nil {
-		a.writeJSON(w, errorOnly())
-		return
-	}
-	payURL := r.FormValue("payUrl")
-	if payURL == "" || round2(price) == 0 || payType == 0 {
-		a.writeJSON(w, errorOnly())
+		a.writeJSON(w, errorRes(err.Error()))
 		return
 	}
 	if err := a.store.CreateQRCode(r.Context(), &PayQRCode{
 		PayURL: payURL,
-		Price:  round2(price),
+		Price:  price,
 		Type:   payType,
 	}); err != nil {
 		a.writeJSON(w, errorOnly())
@@ -1051,9 +1045,14 @@ func (a *App) handleGetState(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleEncodeQRCode(w http.ResponseWriter, r *http.Request) {
 	applySensitiveNoStoreHeaders(w)
-	content := r.URL.Query().Get("url")
-	if content == "" {
+	raw := r.URL.Query().Get("url")
+	if raw == "" {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	content, err := validateQRCodePayload(raw)
+	if err != nil {
+		http.Error(w, "invalid qrcode content", http.StatusBadRequest)
 		return
 	}
 	image, err := encodeQRCode(content)
@@ -1070,7 +1069,11 @@ func (a *App) handleDecodeQRCode(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, errorRes("未登录"))
 		return
 	}
-	_ = r.ParseForm()
+	r.Body = http.MaxBytesReader(w, r.Body, maxQRCodeBase64Form)
+	if err := r.ParseForm(); err != nil {
+		a.writeJSON(w, errorOnly())
+		return
+	}
 	content, err := decodeQRCodeFromBase64(r.FormValue("base64"))
 	if err != nil {
 		a.writeJSON(w, errorOnly())

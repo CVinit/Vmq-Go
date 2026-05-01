@@ -282,14 +282,31 @@ func (a *App) epayPublicBaseURL(r *http.Request) string {
 	if strings.TrimSpace(a.cfg.EpayPublicBaseURL) != "" {
 		return strings.TrimRight(strings.TrimSpace(a.cfg.EpayPublicBaseURL), "/")
 	}
+	return a.requestScheme(r) + "://" + r.Host
+}
+
+func (a *App) requestScheme(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if forwardedProto := firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Proto")); forwardedProto == "http" || forwardedProto == "https" {
-		scheme = forwardedProto
+	if a.trustForwardedHeaders(r) {
+		if forwardedProto := firstForwardedHeaderValue(r.Header.Get("X-Forwarded-Proto")); forwardedProto == "http" || forwardedProto == "https" {
+			scheme = forwardedProto
+		}
 	}
-	return scheme + "://" + r.Host
+	return scheme
+}
+
+func (a *App) trustForwardedHeaders(r *http.Request) bool {
+	if a.clientIPs == nil {
+		return false
+	}
+	remoteIP := parseRemoteIP(r.RemoteAddr)
+	if remoteIP == nil {
+		return false
+	}
+	return a.clientIPs.isTrustedProxy(remoteIP) || a.clientIPs.isCloudflareProxy(remoteIP)
 }
 
 func firstForwardedHeaderValue(raw string) string {
