@@ -15,6 +15,7 @@ import (
 )
 
 var ErrNotFound = errors.New("not found")
+var ErrDuplicatePayment = errors.New("duplicate payment receipt")
 
 type Store interface {
 	BootstrapDefaults(ctx context.Context, now time.Time, cfg Config) error
@@ -25,6 +26,7 @@ type Store interface {
 	ReleasePrice(ctx context.Context, key string) error
 	CreateOrder(ctx context.Context, order *PayOrder) error
 	UpdateOrder(ctx context.Context, order *PayOrder) error
+	CloseOrder(ctx context.Context, orderID string, closeDate int64) (*PayOrder, bool, error)
 	GetOrderByPayID(ctx context.Context, payID string) (*PayOrder, error)
 	GetOrderByOrderID(ctx context.Context, orderID string) (*PayOrder, error)
 	GetOrderByID(ctx context.Context, id int64) (*PayOrder, error)
@@ -266,6 +268,63 @@ func (s *PostgresStore) UpdateOrder(ctx context.Context, order *PayOrder) error 
 	return err
 }
 
+func (s *PostgresStore) CloseOrder(ctx context.Context, orderID string, closeDate int64) (*PayOrder, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	order := PayOrder{}
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url
+		FROM pay_orders
+		WHERE order_id = $1
+		FOR UPDATE
+	`, orderID).Scan(
+		&order.ID,
+		&order.OrderID,
+		&order.PayID,
+		&order.CreateDate,
+		&order.PayDate,
+		&order.CloseDate,
+		&order.Param,
+		&order.Type,
+		&order.Price,
+		&order.ReallyPrice,
+		&order.NotifyURL,
+		&order.ReturnURL,
+		&order.State,
+		&order.IsAuto,
+		&order.PayURL,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if order.State != 0 {
+		return &order, false, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE pay_orders SET state = -1, close_date = $2 WHERE id = $1 AND state = 0`, order.ID, closeDate); err != nil {
+		return nil, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM tmp_prices WHERE price = $1`, priceKey(order.Type, order.ReallyPrice)); err != nil {
+		return nil, false, err
+	}
+
+	order.State = -1
+	order.CloseDate = closeDate
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return &order, true, nil
+}
+
 func (s *PostgresStore) GetOrderByPayID(ctx context.Context, payID string) (*PayOrder, error) {
 	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url FROM pay_orders WHERE pay_id = $1`, payID)
 }
@@ -294,6 +353,19 @@ func (s *PostgresStore) MarkOrderPaidByPrice(ctx context.Context, reallyPrice fl
 	defer func() {
 		_ = tx.Rollback()
 	}()
+
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, payDate); err != nil {
+		return nil, err
+	}
+
+	var duplicate int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM pay_orders WHERE pay_date = $1 AND pay_date > 0 LIMIT 1`, payDate).Scan(&duplicate)
+	if err == nil {
+		return nil, ErrDuplicatePayment
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 
 	order := PayOrder{}
 	err = tx.QueryRowContext(ctx, `
@@ -690,6 +762,30 @@ func (m *MemoryStore) UpdateOrder(_ context.Context, order *PayOrder) error {
 	return nil
 }
 
+func (m *MemoryStore) CloseOrder(_ context.Context, orderID string, closeDate int64) (*PayOrder, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var order *PayOrder
+	for _, candidate := range m.orders {
+		if candidate.OrderID == orderID {
+			order = candidate
+			break
+		}
+	}
+	if order == nil {
+		return nil, false, nil
+	}
+	if order.State != 0 {
+		copyOrder := *order
+		return &copyOrder, false, nil
+	}
+	order.State = -1
+	order.CloseDate = closeDate
+	delete(m.tmpPrices, priceKey(order.Type, order.ReallyPrice))
+	copyOrder := *order
+	return &copyOrder, true, nil
+}
+
 func (m *MemoryStore) GetOrderByPayID(_ context.Context, payID string) (*PayOrder, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -755,6 +851,11 @@ func (m *MemoryStore) GetOpenOrderByPrice(_ context.Context, reallyPrice float64
 func (m *MemoryStore) MarkOrderPaidByPrice(_ context.Context, reallyPrice float64, payType int, payDate, closeDate int64) (*PayOrder, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, order := range m.orders {
+		if order.PayDate == payDate && order.PayDate > 0 {
+			return nil, ErrDuplicatePayment
+		}
+	}
 	var chosen *PayOrder
 	for _, order := range m.orders {
 		if order.State == 0 && order.Type == payType && round2(order.ReallyPrice) == round2(reallyPrice) {

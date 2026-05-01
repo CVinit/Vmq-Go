@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -784,20 +785,17 @@ func (a *App) handleCloseOrder(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, errorRes("签名校验不通过"))
 		return
 	}
-	order, err := a.store.GetOrderByOrderID(r.Context(), orderID)
-	if err != nil || order == nil {
+	order, closed, err := a.store.CloseOrder(r.Context(), orderID, a.now().UnixMilli())
+	if err != nil {
+		a.writeJSON(w, errorOnly())
+		return
+	}
+	if order == nil {
 		a.writeJSON(w, errorRes("云端订单编号不存在"))
 		return
 	}
-	if order.State != 0 {
+	if !closed {
 		a.writeJSON(w, errorRes("订单状态不允许关闭"))
-		return
-	}
-	_ = a.store.ReleasePrice(r.Context(), priceKey(order.Type, order.ReallyPrice))
-	order.CloseDate = a.now().UnixMilli()
-	order.State = -1
-	if err := a.store.UpdateOrder(r.Context(), order); err != nil {
-		a.writeJSON(w, errorOnly())
 		return
 	}
 	a.writeJSON(w, successOnly())
@@ -876,6 +874,9 @@ func (a *App) handleAppPushLogic(ctx context.Context, payType int, priceRaw, tim
 	nowMillis := a.now().UnixMilli()
 	order, err := a.store.MarkOrderPaidByPrice(ctx, price, payType, ts, nowMillis)
 	if err != nil {
+		if errors.Is(err, ErrDuplicatePayment) {
+			return errorRes("重复推送")
+		}
 		return errorOnly()
 	}
 	if order == nil {

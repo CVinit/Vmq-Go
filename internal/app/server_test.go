@@ -738,6 +738,94 @@ func TestAppPushReplayDoesNotPaySecondOrder(t *testing.T) {
 	}
 }
 
+func TestMarkOrderPaidRejectsDuplicatePayDateInsideStore(t *testing.T) {
+	app := newTestApp(t)
+	ctx := context.Background()
+	payDate := app.now().UnixMilli()
+	first := &PayOrder{
+		OrderID:     "duplicate-pay-date-1",
+		PayID:       "duplicate-pay-date-1",
+		CreateDate:  app.now().UnixMilli(),
+		Param:       "demo",
+		Type:        1,
+		Price:       9.99,
+		ReallyPrice: 9.99,
+		State:       0,
+		IsAuto:      1,
+		PayURL:      "weixin://pay-1",
+	}
+	second := &PayOrder{
+		OrderID:     "duplicate-pay-date-2",
+		PayID:       "duplicate-pay-date-2",
+		CreateDate:  app.now().UnixMilli(),
+		Param:       "demo",
+		Type:        1,
+		Price:       10,
+		ReallyPrice: 10,
+		State:       0,
+		IsAuto:      1,
+		PayURL:      "weixin://pay-2",
+	}
+	if err := app.store.CreateOrder(ctx, first); err != nil {
+		t.Fatalf("CreateOrder first returned error: %v", err)
+	}
+	if err := app.store.CreateOrder(ctx, second); err != nil {
+		t.Fatalf("CreateOrder second returned error: %v", err)
+	}
+	if paid, err := app.store.MarkOrderPaidByPrice(ctx, first.ReallyPrice, first.Type, payDate, payDate); err != nil || paid == nil {
+		t.Fatalf("expected first mark paid to succeed, paid=%+v err=%v", paid, err)
+	}
+	paid, err := app.store.MarkOrderPaidByPrice(ctx, second.ReallyPrice, second.Type, payDate, payDate)
+	if !errors.Is(err, ErrDuplicatePayment) || paid != nil {
+		t.Fatalf("expected duplicate pay date to be rejected, paid=%+v err=%v", paid, err)
+	}
+	storedSecond, err := app.store.GetOrderByOrderID(ctx, second.OrderID)
+	if err != nil {
+		t.Fatalf("GetOrderByOrderID returned error: %v", err)
+	}
+	if storedSecond == nil || storedSecond.State != 0 {
+		t.Fatalf("expected second order to remain pending, got %+v", storedSecond)
+	}
+}
+
+func TestCloseOrderDoesNotOverwritePaidOrder(t *testing.T) {
+	app := newTestApp(t)
+	ctx := context.Background()
+	payDate := app.now().UnixMilli()
+	order := &PayOrder{
+		OrderID:     "close-paid-order",
+		PayID:       "close-paid-order",
+		CreateDate:  app.now().UnixMilli(),
+		Param:       "demo",
+		Type:        1,
+		Price:       10,
+		ReallyPrice: 10,
+		State:       0,
+		IsAuto:      1,
+		PayURL:      "weixin://pay",
+	}
+	if err := app.store.CreateOrder(ctx, order); err != nil {
+		t.Fatalf("CreateOrder returned error: %v", err)
+	}
+	if paid, err := app.store.MarkOrderPaidByPrice(ctx, order.ReallyPrice, order.Type, payDate, payDate); err != nil || paid == nil {
+		t.Fatalf("expected mark paid to succeed, paid=%+v err=%v", paid, err)
+	}
+	closedOrder, closed, err := app.store.CloseOrder(ctx, order.OrderID, payDate+1)
+	if err != nil {
+		t.Fatalf("CloseOrder returned error: %v", err)
+	}
+	if closed || closedOrder == nil {
+		t.Fatalf("expected paid order not to be closed, closed=%v order=%+v", closed, closedOrder)
+	}
+	stored, err := app.store.GetOrderByOrderID(ctx, order.OrderID)
+	if err != nil {
+		t.Fatalf("GetOrderByOrderID returned error: %v", err)
+	}
+	if stored == nil || stored.State != 1 || stored.CloseDate != payDate {
+		t.Fatalf("expected paid order state to be preserved, got %+v", stored)
+	}
+}
+
 func TestAppPushDoesNotAcceptMerchantKey(t *testing.T) {
 	app := newTestApp(t)
 	app.cfg.AllowPrivateCallbacks = true
