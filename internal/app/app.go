@@ -1004,7 +1004,7 @@ func (a *App) handleCheckOrder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a.writeJSON(w, successRes(target+"?"+query))
+	a.writeJSON(w, successRes(appendQueryString(target, query)))
 }
 
 func (a *App) handleGetState(w http.ResponseWriter, r *http.Request) {
@@ -1224,6 +1224,19 @@ func buildNotifyQuery(order *PayOrder, key string) string {
 		"&price=" + url.QueryEscape(formatRawFloat(order.Price)) +
 		"&reallyPrice=" + url.QueryEscape(formatRawFloat(order.ReallyPrice)) +
 		"&sign=" + url.QueryEscape(sign)
+}
+
+func appendQueryString(target, query string) string {
+	if target == "" {
+		return "?" + query
+	}
+	if strings.HasSuffix(target, "?") || strings.HasSuffix(target, "&") {
+		return target + query
+	}
+	if strings.Contains(target, "?") {
+		return target + "&" + query
+	}
+	return target + "?" + query
 }
 
 func formatRawFloat(value float64) string {
