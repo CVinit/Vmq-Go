@@ -219,6 +219,10 @@ VMQ 当前易支付适配层不支持 `qqpay`。如果 Dujiao-Next 配置了 `qq
 
 ## 8. 安全清单
 
+参数签名、防篡改边界、`money` / `notify_url` / `return_url` 如何被保护，见：
+
+- [Dujiao-Next 与 VMQ 易支付参数防篡改说明](DUJIAO_NEXT_VMQ_EPAY_SIGNATURE.md)
+
 上线前逐项确认：
 
 - `EPAY_MERCHANT_KEY` 是独立随机密钥，长度不少于 32 位。
