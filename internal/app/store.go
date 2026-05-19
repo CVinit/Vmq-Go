@@ -107,6 +107,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS tmp_prices (
 			price TEXT PRIMARY KEY
 		)`,
+		`ALTER TABLE pay_orders ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, stmt := range statements {
@@ -229,16 +230,16 @@ func (s *PostgresStore) CreateOrder(ctx context.Context, order *PayOrder) error 
 	return s.db.QueryRowContext(ctx, `
 		INSERT INTO pay_orders (
 			order_id, pay_id, create_date, pay_date, close_date, param, type, price,
-			really_price, notify_url, return_url, state, is_auto, pay_url
+			really_price, notify_url, return_url, state, is_auto, pay_url, name
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8,
-			$9, $10, $11, $12, $13, $14
+			$9, $10, $11, $12, $13, $14, $15
 		)
 		RETURNING id
 	`,
 		order.OrderID, order.PayID, order.CreateDate, order.PayDate, order.CloseDate, order.Param,
 		order.Type, round2(order.Price), round2(order.ReallyPrice), order.NotifyURL, order.ReturnURL,
-		order.State, order.IsAuto, order.PayURL,
+		order.State, order.IsAuto, order.PayURL, order.Name,
 	).Scan(&order.ID)
 }
 
@@ -258,12 +259,13 @@ func (s *PostgresStore) UpdateOrder(ctx context.Context, order *PayOrder) error 
 			return_url = $12,
 			state = $13,
 			is_auto = $14,
-			pay_url = $15
+			pay_url = $15,
+			name = $16
 		WHERE id = $1
 	`,
 		order.ID, order.OrderID, order.PayID, order.CreateDate, order.PayDate, order.CloseDate, order.Param,
 		order.Type, round2(order.Price), round2(order.ReallyPrice), order.NotifyURL, order.ReturnURL,
-		order.State, order.IsAuto, order.PayURL,
+		order.State, order.IsAuto, order.PayURL, order.Name,
 	)
 	return err
 }
@@ -279,7 +281,7 @@ func (s *PostgresStore) CloseOrder(ctx context.Context, orderID string, closeDat
 
 	order := PayOrder{}
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url
+		SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name
 		FROM pay_orders
 		WHERE order_id = $1
 		FOR UPDATE
@@ -299,6 +301,7 @@ func (s *PostgresStore) CloseOrder(ctx context.Context, orderID string, closeDat
 		&order.State,
 		&order.IsAuto,
 		&order.PayURL,
+		&order.Name,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
@@ -326,23 +329,23 @@ func (s *PostgresStore) CloseOrder(ctx context.Context, orderID string, closeDat
 }
 
 func (s *PostgresStore) GetOrderByPayID(ctx context.Context, payID string) (*PayOrder, error) {
-	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url FROM pay_orders WHERE pay_id = $1`, payID)
+	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name FROM pay_orders WHERE pay_id = $1`, payID)
 }
 
 func (s *PostgresStore) GetOrderByOrderID(ctx context.Context, orderID string) (*PayOrder, error) {
-	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url FROM pay_orders WHERE order_id = $1`, orderID)
+	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name FROM pay_orders WHERE order_id = $1`, orderID)
 }
 
 func (s *PostgresStore) GetOrderByID(ctx context.Context, id int64) (*PayOrder, error) {
-	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url FROM pay_orders WHERE id = $1`, id)
+	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name FROM pay_orders WHERE id = $1`, id)
 }
 
 func (s *PostgresStore) GetOrderByPayDate(ctx context.Context, payDate int64) (*PayOrder, error) {
-	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url FROM pay_orders WHERE pay_date = $1`, payDate)
+	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name FROM pay_orders WHERE pay_date = $1`, payDate)
 }
 
 func (s *PostgresStore) GetOpenOrderByPrice(ctx context.Context, reallyPrice float64, payType int) (*PayOrder, error) {
-	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url FROM pay_orders WHERE really_price = $1 AND state = 0 AND type = $2 ORDER BY id DESC LIMIT 1`, round2(reallyPrice), payType)
+	return s.getOrder(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name FROM pay_orders WHERE really_price = $1 AND state = 0 AND type = $2 ORDER BY id DESC LIMIT 1`, round2(reallyPrice), payType)
 }
 
 func (s *PostgresStore) MarkOrderPaidByPrice(ctx context.Context, reallyPrice float64, payType int, payDate, closeDate int64) (*PayOrder, error) {
@@ -369,7 +372,7 @@ func (s *PostgresStore) MarkOrderPaidByPrice(ctx context.Context, reallyPrice fl
 
 	order := PayOrder{}
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url
+		SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name
 		FROM pay_orders
 		WHERE really_price = $1 AND state = 0 AND type = $2
 		ORDER BY id DESC
@@ -391,6 +394,7 @@ func (s *PostgresStore) MarkOrderPaidByPrice(ctx context.Context, reallyPrice fl
 		&order.State,
 		&order.IsAuto,
 		&order.PayURL,
+		&order.Name,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -433,6 +437,7 @@ func (s *PostgresStore) getOrder(ctx context.Context, query string, args ...any)
 		&order.State,
 		&order.IsAuto,
 		&order.PayURL,
+		&order.Name,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -469,7 +474,7 @@ func (s *PostgresStore) ListOrders(ctx context.Context, page, limit int, filter 
 	}
 
 	args = append(args, limit, (page-1)*limit)
-	query := `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url FROM pay_orders` + where + fmt.Sprintf(` ORDER BY id DESC LIMIT $%d OFFSET $%d`, next, next+1)
+	query := `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name FROM pay_orders` + where + fmt.Sprintf(` ORDER BY id DESC LIMIT $%d OFFSET $%d`, next, next+1)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err
@@ -495,6 +500,7 @@ func (s *PostgresStore) ListOrders(ctx context.Context, page, limit int, filter 
 			&order.State,
 			&order.IsAuto,
 			&order.PayURL,
+			&order.Name,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -608,7 +614,7 @@ func (s *PostgresStore) ExpireOrders(ctx context.Context, deadline, closeTime in
 		_ = tx.Rollback()
 	}()
 
-	rows, err := tx.QueryContext(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url FROM pay_orders WHERE create_date < $1 AND state = 0 FOR UPDATE`, deadline)
+	rows, err := tx.QueryContext(ctx, `SELECT id, order_id, pay_id, create_date, pay_date, close_date, param, type, price, really_price, notify_url, return_url, state, is_auto, pay_url, name FROM pay_orders WHERE create_date < $1 AND state = 0 FOR UPDATE`, deadline)
 	if err != nil {
 		return nil, err
 	}
@@ -633,6 +639,7 @@ func (s *PostgresStore) ExpireOrders(ctx context.Context, deadline, closeTime in
 			&order.State,
 			&order.IsAuto,
 			&order.PayURL,
+			&order.Name,
 		); err != nil {
 			return nil, err
 		}

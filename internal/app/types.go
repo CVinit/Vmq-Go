@@ -43,6 +43,7 @@ type PayOrder struct {
 	State       int     `json:"state"`
 	IsAuto      int     `json:"isAuto"`
 	PayURL      string  `json:"payUrl"`
+	Name        string  `json:"name"`
 }
 
 type PayQRCode struct {

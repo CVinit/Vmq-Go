@@ -632,7 +632,7 @@ func (a *App) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	isHTML := parsePositiveIntDefault(r.FormValue("isHtml"), 0)
-	res := a.createOrder(r.Context(), payID, param, payType, priceRaw, round2(price), r.FormValue("notifyUrl"), r.FormValue("returnUrl"), sign)
+	res := a.createOrder(r.Context(), payID, param, payType, priceRaw, round2(price), r.FormValue("notifyUrl"), r.FormValue("returnUrl"), sign, "")
 	if isHTML == 0 {
 		a.writeJSON(w, res)
 		return
@@ -648,7 +648,7 @@ func (a *App) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, "<script>window.location.href = '/payPage/pay.html?orderId="+url.QueryEscape(orderRes.OrderID)+"&token="+url.QueryEscape(orderRes.AccessToken)+"'</script>")
 }
 
-func (a *App) createOrder(ctx context.Context, payID, param string, payType int, priceRaw string, price float64, notifyURL, returnURL, sign string) CommonRes {
+func (a *App) createOrder(ctx context.Context, payID, param string, payType int, priceRaw string, price float64, notifyURL, returnURL, sign, name string) CommonRes {
 	key, err := a.merchantKey(ctx)
 	if err != nil {
 		return errorOnly()
@@ -735,6 +735,7 @@ func (a *App) createOrder(ctx context.Context, payID, param string, payType int,
 		State:       0,
 		IsAuto:      isAuto,
 		PayURL:      payURL,
+		Name:        name,
 	}
 	if err := a.store.CreateOrder(ctx, order); err != nil {
 		_ = a.store.ReleasePrice(ctx, reservedKey)

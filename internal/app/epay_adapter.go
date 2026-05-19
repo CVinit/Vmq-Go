@@ -92,7 +92,7 @@ func (a *App) createEpayOrder(ctx context.Context, r *http.Request) (*epayCreate
 		return nil, errors.New("merchant key unavailable")
 	}
 	sign := md5Hex(input.OutTradeNo + param + strconv.Itoa(input.PayType) + input.Money + merchantKey)
-	res := a.createOrder(ctx, input.OutTradeNo, param, input.PayType, input.Money, mustParseMoney(input.Money), input.NotifyURL, input.ReturnURL, sign)
+	res := a.createOrder(ctx, input.OutTradeNo, param, input.PayType, input.Money, mustParseMoney(input.Money), input.NotifyURL, input.ReturnURL, sign, input.Name)
 	if res.Code != 1 {
 		if res.Msg == "" {
 			return nil, errors.New("create order failed")
