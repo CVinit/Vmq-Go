@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -806,19 +807,25 @@ func (a *App) handleAppHeart(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
 	timestamp := r.FormValue("t")
 	sign := r.FormValue("sign")
+	log.Printf("[appHeart] t=%s sign=%s", timestamp, sign)
 	res := a.handleAppHeartLogic(r.Context(), timestamp, sign)
+	log.Printf("[appHeart] response: code=%d msg=%s", res.Code, res.Msg)
 	a.writeJSON(w, res)
 }
 
 func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) CommonRes {
 	key, err := a.deviceKey(ctx)
 	if err != nil {
+		log.Printf("[appHeart] failed to get deviceKey: %v", err)
 		return errorOnly()
 	}
-	if !secureEqual(sign, md5Hex(timestamp+key)) {
+	expectedSign := md5Hex(timestamp + key)
+	log.Printf("[appHeart] deviceKey=%s expected_sign=md5(%s+key)=%s actual_sign=%s", key, timestamp, expectedSign, sign)
+	if !secureEqual(sign, expectedSign) {
 		return errorRes("签名校验错误")
 	}
 	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
+		log.Printf("[appHeart] time check failed: server_time=%d client_time=%s diff_ms=%d", a.now().UnixMilli(), timestamp, a.now().UnixMilli()-func() int64 { v, _ := strconv.ParseInt(timestamp, 10, 64); return v }())
 		return errorRes("客户端时间错误")
 	}
 	if err := a.store.UpsertSettings(ctx, map[string]string{
@@ -832,12 +839,15 @@ func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) C
 
 func (a *App) handleAppPush(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
+	log.Printf("[appPush] type=%s price=%s t=%s sign=%s", r.FormValue("type"), r.FormValue("price"), r.FormValue("t"), r.FormValue("sign"))
 	payType, err := strconv.Atoi(r.FormValue("type"))
 	if err != nil || (payType != 1 && payType != 2) {
+		log.Printf("[appPush] invalid type: %s", r.FormValue("type"))
 		a.writeJSON(w, errorOnly())
 		return
 	}
 	res := a.handleAppPushLogic(r.Context(), payType, r.FormValue("price"), r.FormValue("t"), r.FormValue("sign"))
+	log.Printf("[appPush] response: code=%d msg=%s", res.Code, res.Msg)
 	a.writeJSON(w, res)
 }
 
