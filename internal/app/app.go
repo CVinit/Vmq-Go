@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -832,28 +833,35 @@ func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) C
 
 func (a *App) handleAppPush(w http.ResponseWriter, r *http.Request) {
 	params := parseRequestParams(r)
+	log.Printf("[appPush] params=%v", params)
 	payType, err := strconv.Atoi(params["type"])
 	if err != nil || (payType != 1 && payType != 2) {
 		a.writeJSON(w, errorOnly())
 		return
 	}
 	res := a.handleAppPushLogic(r.Context(), payType, params["price"], params["t"], params["sign"])
+	log.Printf("[appPush] response: code=%d msg=%s", res.Code, res.Msg)
 	a.writeJSON(w, res)
 }
 
 func (a *App) handleAppPushLogic(ctx context.Context, payType int, priceRaw, timestamp, sign string) CommonRes {
 	key, err := a.deviceKey(ctx)
 	if err != nil {
+		log.Printf("[appPush] failed to get deviceKey: %v", err)
 		return errorOnly()
 	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
+		log.Printf("[appPush] failed to parse timestamp: %v", err)
 		return errorOnly()
 	}
 	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
+		log.Printf("[appPush] time check failed: server_time=%d client_time=%s", a.now().UnixMilli(), timestamp)
 		return errorRes("客户端时间错误")
 	}
-	if !secureEqual(sign, md5Hex(strconv.Itoa(payType)+priceRaw+timestamp+key)) {
+	expectedSign := md5Hex(strconv.Itoa(payType) + priceRaw + timestamp + key)
+	log.Printf("[appPush] sign check: md5(%d+%s+%s+key)=%s actual=%s", payType, priceRaw, timestamp, expectedSign, sign)
+	if !secureEqual(sign, expectedSign) {
 		return errorRes("签名校验错误")
 	}
 	tsMilli := normalizeTimestampMilliInt(ts)
