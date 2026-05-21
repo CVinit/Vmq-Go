@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -804,36 +803,26 @@ func (a *App) handleCloseOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAppHeart(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	log.Printf("[appHeart] method=%s url=%s headers=%v body=%s", r.Method, r.URL.String(), r.Header, string(body))
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-	_ = r.ParseForm()
-	log.Printf("[appHeart] form=%v query=%v", r.PostForm, r.URL.Query())
-	timestamp := r.FormValue("t")
-	sign := r.FormValue("sign")
-	log.Printf("[appHeart] t=%s sign=%s", timestamp, sign)
+	params := parseRequestParams(r)
+	timestamp := params["t"]
+	sign := params["sign"]
 	res := a.handleAppHeartLogic(r.Context(), timestamp, sign)
-	log.Printf("[appHeart] response: code=%d msg=%s", res.Code, res.Msg)
 	a.writeJSON(w, res)
 }
 
 func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) CommonRes {
 	key, err := a.deviceKey(ctx)
 	if err != nil {
-		log.Printf("[appHeart] failed to get deviceKey: %v", err)
 		return errorOnly()
 	}
-	expectedSign := md5Hex(timestamp + key)
-	log.Printf("[appHeart] deviceKey=%s expected_sign=md5(%s+key)=%s actual_sign=%s", key, timestamp, expectedSign, sign)
-	if !secureEqual(sign, expectedSign) {
+	if !secureEqual(sign, md5Hex(timestamp+key)) {
 		return errorRes("签名校验错误")
 	}
 	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
-		log.Printf("[appHeart] time check failed: server_time=%d client_time=%s diff_ms=%d", a.now().UnixMilli(), timestamp, a.now().UnixMilli()-func() int64 { v, _ := strconv.ParseInt(timestamp, 10, 64); return v }())
 		return errorRes("客户端时间错误")
 	}
 	if err := a.store.UpsertSettings(ctx, map[string]string{
-		"lastheart": timestamp,
+		"lastheart": normalizeTimestampMilli(timestamp),
 		"jkstate":   "1",
 	}); err != nil {
 		return errorOnly()
@@ -842,16 +831,13 @@ func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) C
 }
 
 func (a *App) handleAppPush(w http.ResponseWriter, r *http.Request) {
-	_ = r.ParseForm()
-	log.Printf("[appPush] type=%s price=%s t=%s sign=%s", r.FormValue("type"), r.FormValue("price"), r.FormValue("t"), r.FormValue("sign"))
-	payType, err := strconv.Atoi(r.FormValue("type"))
+	params := parseRequestParams(r)
+	payType, err := strconv.Atoi(params["type"])
 	if err != nil || (payType != 1 && payType != 2) {
-		log.Printf("[appPush] invalid type: %s", r.FormValue("type"))
 		a.writeJSON(w, errorOnly())
 		return
 	}
-	res := a.handleAppPushLogic(r.Context(), payType, r.FormValue("price"), r.FormValue("t"), r.FormValue("sign"))
-	log.Printf("[appPush] response: code=%d msg=%s", res.Code, res.Msg)
+	res := a.handleAppPushLogic(r.Context(), payType, params["price"], params["t"], params["sign"])
 	a.writeJSON(w, res)
 }
 
@@ -870,10 +856,11 @@ func (a *App) handleAppPushLogic(ctx context.Context, payType int, priceRaw, tim
 	if !secureEqual(sign, md5Hex(strconv.Itoa(payType)+priceRaw+timestamp+key)) {
 		return errorRes("签名校验错误")
 	}
-	if err := a.store.UpsertSettings(ctx, map[string]string{"lastpay": timestamp}); err != nil {
+	tsMilli := normalizeTimestampMilliInt(ts)
+	if err := a.store.UpsertSettings(ctx, map[string]string{"lastpay": strconv.FormatInt(tsMilli, 10)}); err != nil {
 		return errorOnly()
 	}
-	existing, err := a.store.GetOrderByPayDate(ctx, ts)
+	existing, err := a.store.GetOrderByPayDate(ctx, tsMilli)
 	if err != nil {
 		return errorOnly()
 	}
@@ -1313,4 +1300,40 @@ func WebRootExists(path string) error {
 		return fmt.Errorf("web root %s is not a directory", path)
 	}
 	return nil
+}
+
+func parseRequestParams(r *http.Request) map[string]string {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		var params map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&params); err == nil {
+			result := make(map[string]string, len(params))
+			for k, v := range params {
+				result[k] = fmt.Sprint(v)
+			}
+			return result
+		}
+	}
+	_ = r.ParseForm()
+	result := make(map[string]string)
+	for k, v := range r.Form {
+		if len(v) > 0 {
+			result[k] = v[0]
+		}
+	}
+	return result
+}
+
+func normalizeTimestampMilliInt(ts int64) int64 {
+	if ts < 1e12 {
+		return ts * 1000
+	}
+	return ts
+}
+
+func normalizeTimestampMilli(raw string) string {
+	ts, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return raw
+	}
+	return strconv.FormatInt(normalizeTimestampMilliInt(ts), 10)
 }

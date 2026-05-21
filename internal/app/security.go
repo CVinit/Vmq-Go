@@ -339,7 +339,8 @@ func withinSignedRequestWindow(now time.Time, raw string, maxSkew time.Duration)
 	if err != nil {
 		return false
 	}
-	diff := now.UnixMilli() - ts
+	tsMilli := normalizeTimestampMilliInt(ts)
+	diff := now.UnixMilli() - tsMilli
 	if diff < 0 {
 		diff = -diff
 	}
