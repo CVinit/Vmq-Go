@@ -1129,9 +1129,13 @@ func (a *App) handleDecodeQRCodeFile(w http.ResponseWriter, r *http.Request) {
 func (a *App) writeJSON(w http.ResponseWriter, payload any) {
 	applySensitiveNoStoreHeaders(w)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	encoder := json.NewEncoder(w)
-	encoder.SetEscapeHTML(false)
-	_ = encoder.Encode(payload)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
 }
 
 func (a *App) sendNotifyGET(target, query string) string {
