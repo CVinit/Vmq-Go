@@ -113,7 +113,10 @@ func (a *App) Handler() http.Handler {
 		fileServer.ServeHTTP(w, r)
 	}))
 
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[request] %s %s Content-Type=%s", r.Method, r.URL.String(), r.Header.Get("Content-Type"))
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (a *App) StartBackground(ctx context.Context) {
