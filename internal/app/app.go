@@ -815,15 +815,8 @@ func (a *App) handleAppHeart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) CommonRes {
-	key, err := a.deviceKey(ctx)
-	if err != nil {
-		return errorOnly()
-	}
-	if !secureEqual(sign, md5Hex(timestamp+key)) {
-		return errorRes("签名校验错误")
-	}
-	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
-		return errorRes("客户端时间错误")
+	if !a.verifyDeviceSign(ctx, sign, timestamp) {
+		return errorRes("签名校验不通过")
 	}
 	if err := a.store.UpsertSettings(ctx, map[string]string{
 		"lastheart": normalizeTimestampMilli(timestamp),
@@ -836,36 +829,22 @@ func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) C
 
 func (a *App) handleAppPush(w http.ResponseWriter, r *http.Request) {
 	params := parseRequestParams(r)
-	log.Printf("[appPush] params=%v", params)
 	payType, err := strconv.Atoi(params["type"])
 	if err != nil || (payType != 1 && payType != 2) {
 		a.writeJSON(w, errorOnly())
 		return
 	}
 	res := a.handleAppPushLogic(r.Context(), payType, params["price"], params["t"], params["sign"])
-	log.Printf("[appPush] response: code=%d msg=%s", res.Code, res.Msg)
 	a.writeJSON(w, res)
 }
 
 func (a *App) handleAppPushLogic(ctx context.Context, payType int, priceRaw, timestamp, sign string) CommonRes {
-	key, err := a.deviceKey(ctx)
-	if err != nil {
-		log.Printf("[appPush] failed to get deviceKey: %v", err)
-		return errorOnly()
+	if !a.verifyDeviceSign(ctx, sign, strconv.Itoa(payType)+priceRaw+timestamp) {
+		return errorRes("签名校验不通过")
 	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
-		log.Printf("[appPush] failed to parse timestamp: %v", err)
 		return errorOnly()
-	}
-	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
-		log.Printf("[appPush] time check failed: server_time=%d client_time=%s", a.now().UnixMilli(), timestamp)
-		return errorRes("客户端时间错误")
-	}
-	expectedSign := md5Hex(strconv.Itoa(payType) + priceRaw + timestamp + key)
-	log.Printf("[appPush] sign check: md5(%d+%s+%s+key)=%s actual=%s", payType, priceRaw, timestamp, expectedSign, sign)
-	if !secureEqual(sign, expectedSign) {
-		return errorRes("签名校验错误")
 	}
 	tsMilli := normalizeTimestampMilliInt(ts)
 	if err := a.store.UpsertSettings(ctx, map[string]string{"lastpay": strconv.FormatInt(tsMilli, 10)}); err != nil {
@@ -1032,17 +1011,8 @@ func (a *App) handleGetState(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, errorRes("请传入sign"))
 		return
 	}
-	key, err := a.deviceKey(r.Context())
-	if err != nil {
-		a.writeJSON(w, errorOnly())
-		return
-	}
-	if !secureEqual(sign, md5Hex(timestamp+key)) {
+	if !a.verifyDeviceSign(r.Context(), sign, timestamp) {
 		a.writeJSON(w, errorRes("签名校验不通过"))
-		return
-	}
-	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
-		a.writeJSON(w, errorRes("客户端时间错误"))
 		return
 	}
 	settings, err := a.store.GetSettings(r.Context())
@@ -1297,6 +1267,22 @@ func (a *App) merchantKey(ctx context.Context) (string, error) {
 
 func (a *App) deviceKey(ctx context.Context) (string, error) {
 	return a.store.GetSetting(ctx, "deviceKey")
+}
+
+func (a *App) verifyDeviceSign(ctx context.Context, sign, payload string) bool {
+	// Accept signature made with either merchantKey or deviceKey for
+	// compatibility with PHP-era monitoring clients that use merchantKey.
+	if key, err := a.merchantKey(ctx); err == nil {
+		if secureEqual(sign, md5Hex(payload+key)) {
+			return true
+		}
+	}
+	if key, err := a.deviceKey(ctx); err == nil {
+		if secureEqual(sign, md5Hex(payload+key)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) clientIP(r *http.Request) string {

@@ -826,7 +826,7 @@ func TestCloseOrderDoesNotOverwritePaidOrder(t *testing.T) {
 	}
 }
 
-func TestAppPushDoesNotAcceptMerchantKey(t *testing.T) {
+func TestAppPushAcceptsBothMerchantAndDeviceKey(t *testing.T) {
 	app := newTestApp(t)
 	app.cfg.AllowPrivateCallbacks = true
 	ctx := context.Background()
@@ -883,20 +883,23 @@ func TestAppPushDoesNotAcceptMerchantKey(t *testing.T) {
 
 	first := createReq("merchant-push-1")
 	timestamp := strconv.FormatInt(app.now().UnixMilli(), 10)
-	merchantPush := app.handleAppPushLogic(ctx, 1, "9.99", timestamp, md5Hex("19.99"+timestamp+merchantKey))
-	if merchantPush.Code != -1 || merchantPush.Msg != "签名校验错误" {
-		t.Fatalf("expected merchant key push to be rejected, got %+v", merchantPush)
+	reallyPrice := strconv.FormatFloat(first.ReallyPrice, 'f', -1, 64)
+	merchantPush := app.handleAppPushLogic(ctx, 1, reallyPrice, timestamp, md5Hex("1"+reallyPrice+timestamp+merchantKey))
+	if merchantPush.Code != 1 {
+		t.Fatalf("expected merchant key push to succeed, got %+v", merchantPush)
 	}
 	firstOrder, err := app.store.GetOrderByOrderID(ctx, first.OrderID)
 	if err != nil {
 		t.Fatalf("GetOrderByOrderID returned error: %v", err)
 	}
-	if firstOrder == nil || firstOrder.State != 0 {
-		t.Fatalf("expected first order to remain pending, got %+v", firstOrder)
+	if firstOrder == nil || firstOrder.State != 1 {
+		t.Fatalf("expected first order to be paid by merchant key push, got %+v", firstOrder)
 	}
 
 	second := createReq("merchant-push-2")
-	devicePush := app.handleAppPushLogic(ctx, 1, "10", timestamp, md5Hex("110"+timestamp+deviceKey))
+	timestamp2 := strconv.FormatInt(app.now().UnixMilli()+1, 10)
+	reallyPrice2 := strconv.FormatFloat(second.ReallyPrice, 'f', -1, 64)
+	devicePush := app.handleAppPushLogic(ctx, 1, reallyPrice2, timestamp2, md5Hex("1"+reallyPrice2+timestamp2+deviceKey))
 	if devicePush.Code != 1 {
 		t.Fatalf("expected device key push to succeed, got %+v", devicePush)
 	}
