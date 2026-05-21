@@ -804,7 +804,11 @@ func (a *App) handleCloseOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAppHeart(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	log.Printf("[appHeart] method=%s url=%s headers=%v body=%s", r.Method, r.URL.String(), r.Header, string(body))
+	r.Body = io.NopCloser(strings.NewReader(string(body)))
 	_ = r.ParseForm()
+	log.Printf("[appHeart] form=%v query=%v", r.PostForm, r.URL.Query())
 	timestamp := r.FormValue("t")
 	sign := r.FormValue("sign")
 	log.Printf("[appHeart] t=%s sign=%s", timestamp, sign)
