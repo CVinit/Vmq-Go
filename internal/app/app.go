@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -113,10 +112,7 @@ func (a *App) Handler() http.Handler {
 		fileServer.ServeHTTP(w, r)
 	}))
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[request] %s %s Content-Type=%s", r.Method, r.URL.String(), r.Header.Get("Content-Type"))
-		mux.ServeHTTP(w, r)
-	})
+	return mux
 }
 
 func (a *App) StartBackground(ctx context.Context) {
@@ -807,19 +803,26 @@ func (a *App) handleCloseOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAppHeart(w http.ResponseWriter, r *http.Request) {
-	params := parseRequestParams(r)
-	timestamp := params["t"]
-	sign := params["sign"]
+	_ = r.ParseForm()
+	timestamp := r.FormValue("t")
+	sign := r.FormValue("sign")
 	res := a.handleAppHeartLogic(r.Context(), timestamp, sign)
 	a.writeJSON(w, res)
 }
 
 func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) CommonRes {
-	if !a.verifyDeviceSign(ctx, sign, timestamp) {
-		return errorRes("签名校验不通过")
+	key, err := a.deviceKey(ctx)
+	if err != nil {
+		return errorOnly()
+	}
+	if !secureEqual(sign, md5Hex(timestamp+key)) {
+		return errorRes("签名校验错误")
+	}
+	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
+		return errorRes("客户端时间错误")
 	}
 	if err := a.store.UpsertSettings(ctx, map[string]string{
-		"lastheart": normalizeTimestampMilli(timestamp),
+		"lastheart": timestamp,
 		"jkstate":   "1",
 	}); err != nil {
 		return errorOnly()
@@ -828,29 +831,35 @@ func (a *App) handleAppHeartLogic(ctx context.Context, timestamp, sign string) C
 }
 
 func (a *App) handleAppPush(w http.ResponseWriter, r *http.Request) {
-	params := parseRequestParams(r)
-	payType, err := strconv.Atoi(params["type"])
+	_ = r.ParseForm()
+	payType, err := strconv.Atoi(r.FormValue("type"))
 	if err != nil || (payType != 1 && payType != 2) {
 		a.writeJSON(w, errorOnly())
 		return
 	}
-	res := a.handleAppPushLogic(r.Context(), payType, params["price"], params["t"], params["sign"])
+	res := a.handleAppPushLogic(r.Context(), payType, r.FormValue("price"), r.FormValue("t"), r.FormValue("sign"))
 	a.writeJSON(w, res)
 }
 
 func (a *App) handleAppPushLogic(ctx context.Context, payType int, priceRaw, timestamp, sign string) CommonRes {
-	if !a.verifyDeviceSign(ctx, sign, strconv.Itoa(payType)+priceRaw+timestamp) {
-		return errorRes("签名校验不通过")
+	key, err := a.deviceKey(ctx)
+	if err != nil {
+		return errorOnly()
 	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return errorOnly()
 	}
-	tsMilli := normalizeTimestampMilliInt(ts)
-	if err := a.store.UpsertSettings(ctx, map[string]string{"lastpay": strconv.FormatInt(tsMilli, 10)}); err != nil {
+	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
+		return errorRes("客户端时间错误")
+	}
+	if !secureEqual(sign, md5Hex(strconv.Itoa(payType)+priceRaw+timestamp+key)) {
+		return errorRes("签名校验错误")
+	}
+	if err := a.store.UpsertSettings(ctx, map[string]string{"lastpay": timestamp}); err != nil {
 		return errorOnly()
 	}
-	existing, err := a.store.GetOrderByPayDate(ctx, tsMilli)
+	existing, err := a.store.GetOrderByPayDate(ctx, ts)
 	if err != nil {
 		return errorOnly()
 	}
@@ -1011,8 +1020,17 @@ func (a *App) handleGetState(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, errorRes("请传入sign"))
 		return
 	}
-	if !a.verifyDeviceSign(r.Context(), sign, timestamp) {
+	key, err := a.deviceKey(r.Context())
+	if err != nil {
+		a.writeJSON(w, errorOnly())
+		return
+	}
+	if !secureEqual(sign, md5Hex(timestamp+key)) {
 		a.writeJSON(w, errorRes("签名校验不通过"))
+		return
+	}
+	if !withinSignedRequestWindow(a.now(), timestamp, 50*time.Second) {
+		a.writeJSON(w, errorRes("客户端时间错误"))
 		return
 	}
 	settings, err := a.store.GetSettings(r.Context())
@@ -1099,13 +1117,9 @@ func (a *App) handleDecodeQRCodeFile(w http.ResponseWriter, r *http.Request) {
 func (a *App) writeJSON(w http.ResponseWriter, payload any) {
 	applySensitiveNoStoreHeaders(w)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	data, err := json.Marshal(payload)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	_, _ = w.Write(data)
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(payload)
 }
 
 func (a *App) sendNotifyGET(target, query string) string {
@@ -1269,22 +1283,6 @@ func (a *App) deviceKey(ctx context.Context) (string, error) {
 	return a.store.GetSetting(ctx, "deviceKey")
 }
 
-func (a *App) verifyDeviceSign(ctx context.Context, sign, payload string) bool {
-	// Accept signature made with either merchantKey or deviceKey for
-	// compatibility with PHP-era monitoring clients that use merchantKey.
-	if key, err := a.merchantKey(ctx); err == nil {
-		if secureEqual(sign, md5Hex(payload+key)) {
-			return true
-		}
-	}
-	if key, err := a.deviceKey(ctx); err == nil {
-		if secureEqual(sign, md5Hex(payload+key)) {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *App) clientIP(r *http.Request) string {
 	if a.clientIPs == nil {
 		return clientKey(r)
@@ -1301,40 +1299,4 @@ func WebRootExists(path string) error {
 		return fmt.Errorf("web root %s is not a directory", path)
 	}
 	return nil
-}
-
-func parseRequestParams(r *http.Request) map[string]string {
-	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		var params map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&params); err == nil {
-			result := make(map[string]string, len(params))
-			for k, v := range params {
-				result[k] = fmt.Sprint(v)
-			}
-			return result
-		}
-	}
-	_ = r.ParseForm()
-	result := make(map[string]string)
-	for k, v := range r.Form {
-		if len(v) > 0 {
-			result[k] = v[0]
-		}
-	}
-	return result
-}
-
-func normalizeTimestampMilliInt(ts int64) int64 {
-	if ts < 1e12 {
-		return ts * 1000
-	}
-	return ts
-}
-
-func normalizeTimestampMilli(raw string) string {
-	ts, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return raw
-	}
-	return strconv.FormatInt(normalizeTimestampMilliInt(ts), 10)
 }

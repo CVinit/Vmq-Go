@@ -3,7 +3,7 @@ package app
 type CommonRes struct {
 	Code int    `json:"code"`
 	Msg  string `json:"msg"`
-	Data any    `json:"data"`
+	Data any    `json:"data,omitempty"`
 }
 
 type PageRes struct {
